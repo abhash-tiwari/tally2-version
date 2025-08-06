@@ -1,6 +1,7 @@
 const TallyData = require('../models/TallyData');
 const { getEmbedding } = require('../utils/embedding');
 const { findMostSimilarChunks } = require('../utils/vectorSearch');
+const { preprocessQuery, extractDateContext, createEnhancedPrompt } = require('../utils/queryPreprocessor');
 const axios = require('axios');
 
 exports.chat = async (req, res) => {
@@ -19,9 +20,14 @@ exports.chat = async (req, res) => {
       console.log('[CHAT] Example dataChunk:', tallyData.dataChunks[0]);
     }
 
-    // Embed the question
-    const queryEmbedding = await getEmbedding(question);
-    console.log('[CHAT] Query embedding generated.');
+    // Preprocess the question for better matching
+    const enhancedQuestion = preprocessQuery(question);
+    const dateContext = extractDateContext(question);
+    console.log('[CHAT] Date context detected:', dateContext);
+    
+    // Embed the enhanced question
+    const queryEmbedding = await getEmbedding(enhancedQuestion);
+    console.log('[CHAT] Query embedding generated for enhanced question.');
 
     // Find most relevant data chunks
     const topChunks = findMostSimilarChunks(queryEmbedding, tallyData.dataChunks, 5);
@@ -39,8 +45,9 @@ exports.chat = async (req, res) => {
     // Build context for OpenAI
     const context = topChunks.map(chunk => chunk.content || (chunk._doc && chunk._doc.content) || '').join('\n');
 
-    // Compose improved prompt with explicit instructions and a few-shot example
-    const prompt = `You are an expert accountant. The following is the user's Tally data. Each line is a record in the format: "Account | Amount | Type". Use this data to answer the user's question as accurately as possible. If the answer is present in the data, use it directly. If not, say you cannot find it in the data.\n\nExample:\nTally Data:\nElectricity | 5000 | Expense\nSalary | 20000 | Income\n\nQuestion: What is my current electricity expense?\nAnswer: Your current electricity expense is 5000.\n\nTally Data:\n${context}\n\nQuestion: ${question}\nAnswer:`;
+    // Create enhanced prompt with better date handling
+    const prompt = createEnhancedPrompt(question, context, dateContext);
+    console.log('[CHAT] Enhanced prompt created with date context.');
     console.log('[CHAT] Calling OpenAI API...');
 
     // Call OpenAI API using axios

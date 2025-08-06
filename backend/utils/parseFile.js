@@ -2,6 +2,7 @@ const xlsx = require('xlsx');
 const pdfParse = require('pdf-parse');
 const AdmZip = require('adm-zip');
 const path = require('path');
+const { XMLParser } = require('fast-xml-parser');
 
 async function parseExcel(buffer) {
   const workbook = xlsx.read(buffer, { type: 'buffer' });
@@ -29,10 +30,23 @@ async function parseZIP(buffer) {
         files.push(await parseExcel(entry.getData()));
       } else if (ext === '.pdf') {
         files.push(await parsePDF(entry.getData()));
+      } else if (ext === '.xml') {
+        files.push(await parseXML(entry.getData()));
       }
     }
   }
   return files;
+}
+
+async function parseXML(buffer) {
+  const xmlText = buffer.toString('utf16le').replace(/\u0000/g, '');
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    parseTagValue: true,
+    parseAttributeValue: false,
+    trimValues: true,
+  });
+  return parser.parse(xmlText);
 }
 
 async function parseFile(file) {
@@ -43,6 +57,8 @@ async function parseFile(file) {
     return await parsePDF(file.buffer);
   } else if (ext === '.zip') {
     return await parseZIP(file.buffer);
+  } else if (ext === '.xml') {
+    return await parseXML(file.buffer);
   } else {
     throw new Error('Unsupported file type');
   }
