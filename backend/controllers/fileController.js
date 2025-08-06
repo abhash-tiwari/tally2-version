@@ -109,6 +109,8 @@
 const { parseFile } = require('../utils/parseFile');
 const { getEmbedding } = require('../utils/embedding');
 const TallyData = require('../models/TallyData');
+const { getUserIdFromRequest } = require('../utils/userIdentifier');
+const { chunkTallyData, getChunkingSummary } = require('../utils/dataChunker');
 const { v4: uuidv4 } = require('uuid');
 
 exports.uploadFile = async (req, res) => {
@@ -172,25 +174,84 @@ exports.uploadFile = async (req, res) => {
       return res.status(400).json({ error: 'No content extracted from file' });
     }
 
-    // Get embedding
-    const embedding = await getEmbedding(singleChunk);
-    const sessionId = uuidv4();
+    // Chunk the data to fit OpenAI API limits with overlapping for better context continuity
+    const dataChunks = chunkTallyData(
+      singleChunk, 
+      8000,  // Max tokens per chunk
+      6000,  // Max words per chunk
+      500,   // Overlap tokens between chunks
+      400    // Overlap words between chunks
+    );
+    const chunkingSummary = getChunkingSummary(dataChunks, true); // true = has overlap
+    
+    console.log('[UPLOAD] Chunking summary:', chunkingSummary);
+    console.log('[UPLOAD] Created', dataChunks.length, 'overlapping chunks from file:', file.originalname);
+    
+    if (chunkingSummary.overlapAnalysis) {
+      console.log('[UPLOAD] Overlap analysis:', {
+        totalOverlaps: chunkingSummary.overlapAnalysis.totalOverlaps,
+        avgOverlapTokens: chunkingSummary.overlapAnalysis.averageOverlapTokens,
+        avgOverlapWords: chunkingSummary.overlapAnalysis.averageOverlapWords
+      });
+    }
+
+    // Generate embeddings for each chunk
+    const chunksWithEmbeddings = [];
+    for (let i = 0; i < dataChunks.length; i++) {
+      const chunk = dataChunks[i];
+      console.log(`[UPLOAD] Generating embedding for chunk ${i + 1}/${dataChunks.length}`);
+      
+      try {
+        const embedding = await getEmbedding(chunk);
+        chunksWithEmbeddings.push({
+          content: chunk,
+          embedding,
+          chunkIndex: i + 1,
+          totalChunks: dataChunks.length
+        });
+      } catch (embeddingError) {
+        console.error(`[UPLOAD] Failed to generate embedding for chunk ${i + 1}:`, embeddingError);
+        // Continue with other chunks even if one fails
+        chunksWithEmbeddings.push({
+          content: chunk,
+          embedding: [], // Empty embedding as fallback
+          chunkIndex: i + 1,
+          totalChunks: dataChunks.length,
+          embeddingError: true
+        });
+      }
+    }
+
+    const userId = getUserIdFromRequest(req);
+    const sessionId = uuidv4(); // Keep for backward compatibility
 
     const tallyData = new TallyData({
+      userId,
       sessionId,
       originalFileName: file.originalname,
-      dataChunks: [
-        {
-          content: singleChunk,
-          embedding
-        }
-      ]
+      dataChunks: chunksWithEmbeddings
     });
 
     await tallyData.save();
-    console.log('[UPLOAD] Data saved to MongoDB. Session ID:', sessionId);
+    console.log('[UPLOAD] Data saved to MongoDB. User ID:', userId, 'Session ID:', sessionId);
+    console.log('[UPLOAD] File:', file.originalname, 'processed into', chunksWithEmbeddings.length, 'chunks');
+    console.log('[UPLOAD] Total tokens:', chunkingSummary.totalTokens, 'Total words:', chunkingSummary.totalWords);
 
-    res.json({ sessionId });
+    // Return success with detailed info including overlap statistics
+    const overlapInfo = chunkingSummary.overlapAnalysis ? 
+      ` with ${chunkingSummary.overlapAnalysis.averageOverlapTokens} avg overlap tokens` : '';
+    
+    res.json({ 
+      sessionId, // Keep for backward compatibility
+      userId,
+      message: `File uploaded successfully! Processed into ${chunksWithEmbeddings.length} overlapping chunks${overlapInfo}. You can now chat about all your uploaded data!`,
+      fileName: file.originalname,
+      chunksCreated: chunksWithEmbeddings.length,
+      totalTokens: chunkingSummary.totalTokens,
+      totalWords: chunkingSummary.totalWords,
+      hasOverlap: chunkingSummary.hasOverlap,
+      overlapAnalysis: chunkingSummary.overlapAnalysis
+    });
   } catch (err) {
     console.error('[UPLOAD] Error:', err);
     res.status(500).json({ error: 'File processing failed' });

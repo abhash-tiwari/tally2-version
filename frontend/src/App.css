@@ -49,7 +49,7 @@
 .upload-container {
   display: flex;
   justify-content: center;
-  max-width: 500px;
+  max-width: 600px;
   width: 100%;
   margin: 0 auto;
 }
@@ -74,6 +74,53 @@
   margin: 0 0 25px 0;
   font-weight: 600;
   text-align: center;
+}
+
+/* Floating Chat Button */
+.floating-chat-btn {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 60px;
+  height: 60px;
+  background: linear-gradient(135deg, #667eea 0%, #4ba288 100%);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+  transition: all 0.3s ease;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.floating-chat-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 25px rgba(102, 126, 234, 0.4);
+}
+
+.floating-chat-btn:active {
+  transform: scale(0.95);
+}
+
+/* Pulse animation for floating button */
+@keyframes pulse {
+  0% {
+    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+  }
+  50% {
+    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.6), 0 0 0 10px rgba(102, 126, 234, 0.1);
+  }
+  100% {
+    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+  }
+}
+
+.floating-chat-btn {
+  animation: pulse 2s infinite;
 }
 
 .primary-btn {
@@ -119,7 +166,7 @@
 /* Responsive Design */
 @media (max-width: 768px) {
   .upload-container {
-    max-width: 90%;
+    max-width: 95%;
   }
   
   .upload-section {
@@ -128,6 +175,14 @@
   
   .App-header {
     padding: 20px 15px;
+  }
+  
+  .floating-chat-btn {
+    top: 15px;
+    right: 15px;
+    width: 50px;
+    height: 50px;
+    font-size: 20px;
   }
 }
 

@@ -3,11 +3,11 @@ import './App.css';
 import ChatComponent from './ChatComponent';
 
 function App() {
-  const [sessionId, setSessionId] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [uploadedFile, setUploadedFile] = useState(null);
   const [showChat, setShowChat] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState('');
   const fileInputRef = useRef();
 
   // Handle file upload
@@ -32,10 +32,11 @@ function App() {
         body: formData,
       });
       const data = await res.json();
-      if (res.ok && data.sessionId) {
-        setSessionId(data.sessionId);
+      if (res.ok) {
+        setUploadSuccess(data.message || 'File uploaded successfully!');
         setShowChat(true);
-        console.log('[FRONTEND] Upload success. Session ID:', data.sessionId);
+        console.log('[FRONTEND] Upload success:', data.message);
+        console.log('[FRONTEND] File added to user data collection:', data.fileName);
       } else {
         setUploadError(data.error || 'Upload failed.');
         console.log('[FRONTEND] Upload failed:', data.error);
@@ -50,7 +51,16 @@ function App() {
   return (
     <div className="App">
       <header className="App-header">
-        <h1>Tally Q&A Bot</h1>
+        {/* Floating Chat Button */}
+        <button 
+          className="floating-chat-btn" 
+          onClick={() => setShowChat(true)}
+          title="Chat with AI about your Tally data"
+        >
+          AI
+        </button>
+        
+        <h1>Tally GPT</h1>
         <p className="subtitle">Upload your Tally data and chat with AI to get instant insights</p>
         
         <div className="upload-container">
@@ -59,7 +69,7 @@ function App() {
             <form className="upload-form" onSubmit={handleFileUpload}>
               <input
                 type="file"
-                accept=".xlsx,.pdf,.zip"
+                accept=".xml,.xlsx,.pdf,.zip"
                 ref={fileInputRef}
                 disabled={uploading}
               />
@@ -72,8 +82,13 @@ function App() {
                 Uploaded file: <b>{uploadedFile.name}</b> ({uploadedFile.size} bytes)
               </div>
             )}
+            {uploadSuccess && (
+              <div className="upload-success">
+                {uploadSuccess}
+              </div>
+            )}
             {uploadError && <div className="error">{uploadError}</div>}
-            <p className="file-info">Supported formats: Excel (.xlsx), PDF, ZIP</p>
+            <p className="file-info">Supported formats: .XML, Excel (.xlsx), PDF, ZIP</p>
           </div>
         </div>
       </header>
@@ -84,10 +99,9 @@ function App() {
             setShowChat(false);
             // Reset upload state when closing chat
             setUploadedFile(null);
-            setSessionId('');
+            setUploadSuccess('');
             setUploadError('');
           }} 
-          sessionId={sessionId} 
         />
       )}
     </div>

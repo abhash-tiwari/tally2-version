@@ -2,22 +2,53 @@ const TallyData = require('../models/TallyData');
 const { getEmbedding } = require('../utils/embedding');
 const { findMostSimilarChunks } = require('../utils/vectorSearch');
 const { preprocessQuery, extractDateContext, createEnhancedPrompt } = require('../utils/queryPreprocessor');
+const { getUserIdFromRequest } = require('../utils/userIdentifier');
 const axios = require('axios');
 
 exports.chat = async (req, res) => {
   try {
-    const { sessionId, question } = req.body;
-    console.log('[CHAT] Received question:', question, 'for session:', sessionId);
-    if (!sessionId || !question) return res.status(400).json({ error: 'Missing sessionId or question' });
+    const { question } = req.body;
+    const userId = getUserIdFromRequest(req);
+    
+    console.log('[CHAT] Received question:', question, 'for user:', userId);
+    if (!question) return res.status(400).json({ error: 'Missing question' });
 
-    const tallyData = await TallyData.findOne({ sessionId });
-    if (!tallyData) {
-      console.log('[CHAT] No data found for session:', sessionId);
-      return res.status(404).json({ error: 'Session not found' });
+    // Get ALL data for this user across all uploads
+    // First try to find data with userId (new format)
+    let userTallyData = await TallyData.find({ userId }).sort({ createdAt: -1 });
+    
+    // If no data found with userId, try to find any data (old format for backward compatibility)
+    if (!userTallyData || userTallyData.length === 0) {
+      console.log('[CHAT] No data found with userId:', userId, '- checking for any existing data...');
+      userTallyData = await TallyData.find({}).sort({ createdAt: -1 }).limit(10); // Get recent uploads
+      
+      if (!userTallyData || userTallyData.length === 0) {
+        console.log('[CHAT] No data found at all');
+        return res.status(404).json({ error: 'No uploaded data found. Please upload some Tally files first.' });
+      }
+      
+      console.log('[CHAT] Found', userTallyData.length, 'files from old format - using for backward compatibility');
     }
-    console.log('[CHAT] Data fetched from MongoDB. Chunks:', tallyData.dataChunks.length);
-    if (tallyData.dataChunks.length > 0) {
-      console.log('[CHAT] Example dataChunk:', tallyData.dataChunks[0]);
+    
+    // Combine all data chunks from all user uploads
+    const allDataChunks = [];
+    let totalFiles = 0;
+    userTallyData.forEach(tallyDoc => {
+      totalFiles++;
+      tallyDoc.dataChunks.forEach(chunk => {
+        allDataChunks.push({
+          ...chunk.toObject(),
+          fileName: tallyDoc.originalFileName,
+          uploadedAt: tallyDoc.uploadedAt
+        });
+      });
+    });
+    
+    console.log('[CHAT] User has', totalFiles, 'uploaded files with', allDataChunks.length, 'total data chunks');
+    console.log('[CHAT] Files:', userTallyData.map(d => d.originalFileName).join(', '));
+    
+    if (allDataChunks.length > 0) {
+      console.log('[CHAT] Example dataChunk:', allDataChunks[0]);
     }
 
     // Preprocess the question for better matching
@@ -29,25 +60,34 @@ exports.chat = async (req, res) => {
     const queryEmbedding = await getEmbedding(enhancedQuestion);
     console.log('[CHAT] Query embedding generated for enhanced question.');
 
-    // Find most relevant data chunks
-    const topChunks = findMostSimilarChunks(queryEmbedding, tallyData.dataChunks, 5);
+    // Find most relevant data chunks across ALL user data
+    const topChunks = findMostSimilarChunks(queryEmbedding, allDataChunks, 10); // Increase to 10 for better context
     console.log('[CHAT] Raw topChunks:', topChunks);
-    console.log('[CHAT] Top chunks selected for context:');
+    console.log('[CHAT] Top chunks selected for context (from all user files):');
     topChunks.forEach((c, i) => {
      const content = c.content || (c._doc && c._doc.content);
+     const fileName = c.fileName || 'Unknown file';
     if (typeof content === 'string') {
-      console.log(`  Chunk ${i+1}: ${content}`);
+      console.log(`  Chunk ${i+1} [${fileName}]: ${content.substring(0, 100)}...`);
     } else {
-      console.log(`  Chunk ${i+1}: [No content]`, c);
+      console.log(`  Chunk ${i+1} [${fileName}]: [No content]`, c);
       }
  });
 
-    // Build context for OpenAI
-    const context = topChunks.map(chunk => chunk.content || (chunk._doc && chunk._doc.content) || '').join('\n');
+    // Build context for OpenAI with file information
+    const context = topChunks.map(chunk => {
+      const content = chunk.content || (chunk._doc && chunk._doc.content) || '';
+      const fileName = chunk.fileName || 'Unknown file';
+      return `[From: ${fileName}]\n${content}`;
+    }).join('\n\n');
 
-    // Create enhanced prompt with better date handling
-    const prompt = createEnhancedPrompt(question, context, dateContext);
-    console.log('[CHAT] Enhanced prompt created with date context.');
+    // Create enhanced prompt with better date handling and multi-file context
+    const enhancedPrompt = createEnhancedPrompt(question, context, dateContext);
+    const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.
+
+${enhancedPrompt}`;
+    
+    console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');
     console.log('[CHAT] Calling OpenAI API...');
 
     // Call OpenAI API using axios
@@ -56,8 +96,8 @@ exports.chat = async (req, res) => {
       {
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: 'You are a helpful assistant for Tally data analysis.' },
-          { role: 'user', content: prompt }
+          { role: 'system', content: 'You are a helpful assistant for Tally data analysis. You can analyze data from multiple uploaded files.' },
+          { role: 'user', content: multiFilePrompt }
         ],
         max_tokens: 512,
         temperature: 0.2

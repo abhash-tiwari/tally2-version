@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './ChatComponent.css';
 
-const ChatComponent = ({ onClose, sessionId }) => {
+const ChatComponent = ({ onClose }) => {
   const [chatHistory, setChatHistory] = useState([]);
   const [question, setQuestion] = useState('');
   const [answering, setAnswering] = useState(false);
@@ -37,11 +37,11 @@ const ChatComponent = ({ onClose, sessionId }) => {
     setChatHistory(prev => [...prev, { role: 'user', content: userMessage }]);
 
     try {
-      console.log('[FRONTEND] Sending question:', userMessage, 'Session ID:', sessionId);
+      console.log('[FRONTEND] Sending question:', userMessage);
       const res = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, question: userMessage }),
+        body: JSON.stringify({ question: userMessage }),
       });
       const data = await res.json();
       
@@ -92,12 +92,13 @@ const ChatComponent = ({ onClose, sessionId }) => {
               <div className="welcome-avatar">AI</div>
               <div className="welcome-text">
                 <h4>Welcome to Tally AI!</h4>
-                <p>I can help you analyze your Tally data. Try asking me:</p>
+                <p>I can help you analyze data from all your uploaded Tally files. Try asking me:</p>
                 <ul>
                   <li>"What's my total profit this month?"</li>
                   <li>"Show me all cash vouchers"</li>
                   <li>"What are my outstanding receivables?"</li>
                   <li>"Which ledger has the highest balance?"</li>
+                  <li>"How many files have I uploaded?"</li>
                 </ul>
               </div>
             </div>
