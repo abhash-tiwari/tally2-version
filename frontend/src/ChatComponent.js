@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useAuth } from './contexts/AuthContext';
 import './ChatComponent.css';
 
 const ChatComponent = ({ onClose }) => {
+  const { token } = useAuth();
   const [chatHistory, setChatHistory] = useState([]);
-  const [question, setQuestion] = useState('');
+  const [userInput, setUserInput] = useState('');
   const [answering, setAnswering] = useState(false);
   const [chatError, setChatError] = useState('');
   const chatContainerRef = useRef(null);
@@ -26,10 +28,10 @@ const ChatComponent = ({ onClose }) => {
   // Handle chat submit
   const handleChatSubmit = async (e) => {
     e.preventDefault();
-    if (!question.trim()) return;
+    if (!userInput.trim()) return;
 
-    const userMessage = question.trim();
-    setQuestion('');
+    const userMessage = userInput.trim();
+    setUserInput('');
     setAnswering(true);
     setChatError('');
     
@@ -40,7 +42,10 @@ const ChatComponent = ({ onClose }) => {
       console.log('[FRONTEND] Sending question:', userMessage);
       const res = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ question: userMessage }),
       });
       const data = await res.json();
@@ -146,8 +151,8 @@ const ChatComponent = ({ onClose }) => {
             <div className="input-wrapper">
               <textarea
                 ref={inputRef}
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
+                value={userInput}
+                onChange={(e) => setUserInput(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="Message Tally AI..."
                 disabled={answering}
@@ -156,7 +161,7 @@ const ChatComponent = ({ onClose }) => {
               />
               <button 
                 type="submit" 
-                disabled={answering || !question.trim()}
+                disabled={answering || !userInput.trim()}
                 className="send-btn"
               >
                 {answering ? (

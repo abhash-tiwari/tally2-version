@@ -1,14 +1,35 @@
 import React, { useState, useRef } from 'react';
-import './App.css';
+import axios from 'axios';
 import ChatComponent from './ChatComponent';
+import LoginComponent from './components/LoginComponent';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import './App.css';
 
-function App() {
+function AppContent() {
+  const { user, loading, logout, isAuthenticated, token } = useAuth();
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [uploadedFile, setUploadedFile] = useState(null);
   const [showChat, setShowChat] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState('');
   const fileInputRef = useRef();
+
+  // Show loading spinner while checking authentication
+  if (loading) {
+    return (
+      <div className="App">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <p>Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login if not authenticated
+  if (!isAuthenticated) {
+    return <LoginComponent />;
+  }
 
   // Handle file upload
   const handleFileUpload = async (e) => {
@@ -29,6 +50,9 @@ function App() {
       console.log('[FRONTEND] Uploading file...');
       const res = await fetch('http://localhost:5000/api/upload', {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
         body: formData,
       });
       const data = await res.json();
@@ -60,6 +84,13 @@ function App() {
           AI
         </button>
         
+        {/* User Profile & Logout */}
+        <div className="user-profile">
+          <img src={user.picture || '/default-avatar.png'} alt="Profile" className="profile-pic" />
+          <span className="user-name">Welcome, {user.name}!</span>
+          <button className="logout-btn" onClick={logout}>Logout</button>
+        </div>
+        
         <h1>Tally GPT</h1>
         <p className="subtitle">Upload your Tally data and chat with AI to get instant insights</p>
         
@@ -69,7 +100,7 @@ function App() {
             <form className="upload-form" onSubmit={handleFileUpload}>
               <input
                 type="file"
-                accept=".xml,.xlsx,.pdf,.zip"
+                accept=".xml,.xlsx,.pdf,.zip,.txt"
                 ref={fileInputRef}
                 disabled={uploading}
               />
@@ -88,7 +119,7 @@ function App() {
               </div>
             )}
             {uploadError && <div className="error">{uploadError}</div>}
-            <p className="file-info">Supported formats: .XML, Excel (.xlsx), PDF, ZIP</p>
+            <p className="file-info">Supported formats: .XML, .TXT, Excel (.xlsx), PDF, ZIP</p>
           </div>
         </div>
       </header>
@@ -105,6 +136,15 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+// Wrapper App with AuthProvider
+function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 

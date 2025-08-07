@@ -2,13 +2,17 @@ const mongoose = require('mongoose');
 
 const TallyDataSchema = new mongoose.Schema({
   userId: { type: String, required: true, index: true }, // User identifier (can be IP, session, or actual user ID)
-  sessionId: String, // Keep for backward compatibility, but not required
-  originalFileName: String,
+  sessionId: { type: String, required: false, index: true }, // Keep for backward compatibility, but not required
+  userEmail: { type: String, required: false, index: true },
+  originalFileName: { type: String, required: true },
   uploadedAt: { type: Date, default: Date.now },
   dataChunks: [
     {
       content: String,
       embedding: [Number],
+      chunkIndex: Number,
+      totalChunks: Number,
+      embeddingError: { type: Boolean, default: false }
     }
   ],
   createdAt: { type: Date, default: Date.now }

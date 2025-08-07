@@ -107,11 +107,12 @@
 
 
 const { parseFile } = require('../utils/parseFile');
-const { getEmbedding } = require('../utils/embedding');
-const TallyData = require('../models/TallyData');
-const { getUserIdFromRequest } = require('../utils/userIdentifier');
-const { chunkTallyData, getChunkingSummary } = require('../utils/dataChunker');
 const { v4: uuidv4 } = require('uuid');
+const TallyData = require('../models/TallyData');
+const User = require('../models/User');
+const { getEmbedding } = require('../utils/embedding');
+const { chunkTallyData, getChunkingSummary } = require('../utils/dataChunker');
+const { authenticateToken } = require('../routes/auth');
 
 exports.uploadFile = async (req, res) => {
   try {
@@ -177,10 +178,10 @@ exports.uploadFile = async (req, res) => {
     // Chunk the data to fit OpenAI API limits with overlapping for better context continuity
     const dataChunks = chunkTallyData(
       singleChunk, 
-      8000,  // Max tokens per chunk
-      6000,  // Max words per chunk
-      500,   // Overlap tokens between chunks
-      400    // Overlap words between chunks
+      4000,  // Max tokens per chunk (reduced from 8000)
+      3000,  // Max words per chunk (reduced from 6000)
+      200,   // Overlap tokens between chunks (reduced from 500)
+      150    // Overlap words between chunks (reduced from 400)
     );
     const chunkingSummary = getChunkingSummary(dataChunks, true); // true = has overlap
     
@@ -222,14 +223,18 @@ exports.uploadFile = async (req, res) => {
       }
     }
 
-    const userId = getUserIdFromRequest(req);
+    // Get authenticated user ID from JWT token
+    const userId = req.user.userId;
     const sessionId = uuidv4(); // Keep for backward compatibility
+    
+    console.log('[UPLOAD] Authenticated user:', req.user.email, 'uploading file:', file.originalname);
 
     const tallyData = new TallyData({
       userId,
       sessionId,
       originalFileName: file.originalname,
-      dataChunks: chunksWithEmbeddings
+      dataChunks: chunksWithEmbeddings,
+      userEmail: req.user.email // Add user email for reference
     });
 
     await tallyData.save();
@@ -244,6 +249,7 @@ exports.uploadFile = async (req, res) => {
     res.json({ 
       sessionId, // Keep for backward compatibility
       userId,
+      userEmail: req.user.email,
       message: `File uploaded successfully! Processed into ${chunksWithEmbeddings.length} overlapping chunks${overlapInfo}. You can now chat about all your uploaded data!`,
       fileName: file.originalname,
       chunksCreated: chunksWithEmbeddings.length,
