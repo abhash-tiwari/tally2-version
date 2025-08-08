@@ -263,3 +263,87 @@ exports.uploadFile = async (req, res) => {
     res.status(500).json({ error: 'File processing failed' });
   }
 };
+
+/**
+ * Get all files uploaded by the authenticated user
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getUserFiles = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    console.log('[GET_FILES] Getting files for user:', req.user.email);
+
+    // Get all files for the user, grouped by fileName
+    console.log('[GET_FILES] Querying MongoDB for userId:', userId);
+    
+    // First, let's try a simple find to see if we get any data
+    const allUserData = await TallyData.find({ userId: userId });
+    console.log('[GET_FILES] Found', allUserData.length, 'total documents for user');
+    
+    if (allUserData.length === 0) {
+      console.log('[GET_FILES] No data found for user, returning empty array');
+      return res.json({ 
+        files: [],
+        totalFiles: 0,
+        userEmail: req.user.email
+      });
+    }
+    
+    // Now try the aggregation
+    try {
+      const files = await TallyData.aggregate([
+        { $match: { userId: userId } },
+        { 
+          $group: { 
+            _id: '$originalFileName',
+            fileId: { $first: '$_id' },
+            fileName: { $first: '$originalFileName' },
+            uploadedAt: { $first: '$createdAt' },
+            totalChunks: { $sum: { $size: '$dataChunks' } },
+            totalTokens: { 
+              $sum: { 
+                $reduce: {
+                  input: '$dataChunks',
+                  initialValue: 0,
+                  in: { $add: ['$$value', { $strLenCP: '$$this.content' }] }
+                }
+              }
+            }
+          }
+        },
+        { $sort: { uploadedAt: -1 } }
+      ]);
+
+      console.log('[GET_FILES] Found', files.length, 'files for user:', req.user.email);
+      
+      res.json({ 
+        files,
+        totalFiles: files.length,
+        userEmail: req.user.email
+      });
+    } catch (aggregationError) {
+      console.error('[GET_FILES] Aggregation error:', aggregationError);
+      
+      // Fallback: return simple file list without aggregation
+      const simpleFiles = allUserData.map(doc => ({
+        fileId: doc._id,
+        fileName: doc.originalFileName,
+        uploadedAt: doc.createdAt,
+        totalChunks: doc.dataChunks ? doc.dataChunks.length : 0,
+        totalTokens: doc.dataChunks ? doc.dataChunks.reduce((sum, chunk) => sum + (chunk.content ? chunk.content.length : 0), 0) : 0
+      }));
+      
+      console.log('[GET_FILES] Using fallback method, found', simpleFiles.length, 'files');
+      
+      res.json({ 
+        files: simpleFiles,
+        totalFiles: simpleFiles.length,
+        userEmail: req.user.email
+      });
+    }
+  } catch (err) {
+    console.error('[GET_FILES] Error:', err);
+    res.status(500).json({ error: 'Failed to get user files' });
+  }
+};

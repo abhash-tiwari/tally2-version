@@ -1,0 +1,277 @@
+/* File Selector Component Styles */
+
+.file-selector {
+  position: relative;
+  margin-bottom: 16px;
+  z-index: 1500;
+}
+
+.file-selector-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-selector-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f8f9fa;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 14px;
+  color: #374151;
+  min-width: 200px;
+}
+
+.file-selector-toggle:hover {
+  border-color: #667eea;
+  background: #f0f4ff;
+}
+
+.file-selector-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.file-selector-icon {
+  font-size: 16px;
+}
+
+.file-selector-text {
+  flex: 1;
+  text-align: left;
+  font-weight: 500;
+}
+
+.file-selector-arrow {
+  font-size: 12px;
+  transition: transform 0.2s;
+  color: #6b7280;
+}
+
+.file-selector-arrow.open {
+  transform: rotate(180deg);
+}
+
+.file-selector-clear {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.file-selector-clear:hover {
+  background: #fecaca;
+  transform: scale(1.1);
+}
+
+.file-selector-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: white;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  z-index: 2000;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.dropdown-up {
+  bottom: 100%;
+  box-shadow: 0 -10px 25px rgba(0, 0, 0, 0.1);
+  margin-bottom: 4px;
+  animation: slideUp 0.2s ease-out;
+}
+
+.dropdown-down {
+  top: 100%;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  margin-top: 4px;
+  animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.file-selector-loading,
+.file-selector-error,
+.file-selector-empty {
+  padding: 20px;
+  text-align: center;
+  color: #6b7280;
+}
+
+.file-selector-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.file-selector-loading .loading-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e5e7eb;
+  border-top: 2px solid #667eea;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.file-selector-error {
+  color: #dc2626;
+  background: #fef2f2;
+  border-radius: 6px;
+  margin: 8px;
+}
+
+.file-selector-empty {
+  color: #9ca3af;
+}
+
+.file-selector-empty span {
+  font-size: 24px;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.file-selector-empty p {
+  margin: 0 0 4px 0;
+  font-weight: 500;
+}
+
+.file-selector-empty small {
+  font-size: 12px;
+}
+
+.file-selector-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.file-selector-action-btn {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.file-selector-action-btn:hover {
+  background: #e5e7eb;
+  border-color: #9ca3af;
+}
+
+.file-selector-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.file-selector-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  border-bottom: 1px solid #f9fafb;
+}
+
+.file-selector-item:hover {
+  background: #f9fafb;
+}
+
+.file-selector-item:last-child {
+  border-bottom: none;
+}
+
+.file-selector-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #667eea;
+  cursor: pointer;
+}
+
+.file-selector-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-selector-item-name {
+  font-weight: 500;
+  color: #1f2937;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-selector-item-details {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.file-selector-item-details span {
+  white-space: nowrap;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .file-selector-toggle {
+    min-width: 150px;
+    font-size: 13px;
+  }
+  
+  .file-selector-dropdown {
+    max-height: 250px;
+  }
+  
+  .file-selector-item-details {
+    flex-direction: column;
+    gap: 2px;
+  }
+}

@@ -44,17 +44,103 @@ function filterChunksByType(chunks, type) {
   });
 }
 
+// Build a focused keyword list based on the query and detected type
+function buildQueryKeywords(userQuestion, queryType) {
+  const base = [
+    // Common financial terms
+    'voucher', 'narration', 'account', 'ledger', 'bank', 'ltd', 'limited'
+  ];
+
+  if (queryType === 'loan') {
+    base.push(
+      'loan', 'loans', 'secured loan', 'unsecured loan', 'od', 'overdraft',
+      'bank loan', 'interest on loan', 'cc account', 'borrowing', 'finance',
+      'icici', 'kotak', 'indusind', 'hdfc', 'sbi'
+    );
+  } else if (queryType === 'sales') {
+    base.push('sale', 'sales', 'igst', 'cgst', 'sgst', 'invoice');
+  } else if (queryType === 'purchase') {
+    base.push('purchase', 'purc', 'supplier', 'grn', 'igst', 'cgst', 'sgst');
+  } else if (queryType === 'expense') {
+    base.push('expense', 'expenses', 'rent', 'salary', 'bank charges', 'fees');
+  } else if (queryType === 'receipt') {
+    base.push('receipt', 'rcpt', 'income');
+  }
+
+  // Add significant words from the question (simple split, keep words >= 3 chars)
+  const extras = String(userQuestion)
+    .toLowerCase()
+    .split(/[^a-z0-9&]+/)
+    .filter(w => w && w.length >= 3 && !base.includes(w));
+
+  return Array.from(new Set([...base, ...extras]));
+}
+
+// Condense a large chunk to keep only relevant lines and a bit of surrounding context
+function condenseContentByKeywords(content, keywords, options = {}) {
+  if (!content || typeof content !== 'string') return '';
+  const {
+    maxLines = 120,
+    linesBefore = 0,
+    linesAfter = 0,
+    maxCharsFallback = 800
+  } = options;
+
+  const lowerKeywords = keywords.map(k => k.toLowerCase());
+  const lines = content.split(/\r?\n/);
+  const picked = new Set();
+
+  function lineMatches(line) {
+    const lower = line.toLowerCase();
+    return lowerKeywords.some(k => k && lower.includes(k));
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lineMatches(lines[i])) {
+      const start = Math.max(0, i - linesBefore);
+      const end = Math.min(lines.length - 1, i + linesAfter);
+      for (let j = start; j <= end; j += 1) {
+        picked.add(j);
+      }
+    }
+    if (picked.size >= maxLines) break;
+  }
+
+  if (picked.size === 0) {
+    // No matches found. Return a small head of the content as fallback.
+    return lines.slice(0, Math.min(lines.length, Math.ceil(maxCharsFallback / 80))).join('\n').slice(0, maxCharsFallback);
+  }
+
+  const condensed = Array.from(picked).sort((a, b) => a - b).map(idx => lines[idx]);
+  const result = condensed.join('\n');
+  // Safety trim to avoid mega chunks
+  return result.length > maxCharsFallback * 4 ? result.slice(0, maxCharsFallback * 4) : result;
+}
+
 exports.chat = async (req, res) => {
   try {
-    const { question } = req.body;
+    const { question, selectedFiles } = req.body;
     const userId = req.user.userId;
     
     console.log('[CHAT] Authenticated user:', req.user.email, 'asking:', question);
     console.log('[CHAT] Received question:', question, 'for user:', userId);
+    console.log('[CHAT] Selected files:', selectedFiles);
     if (!question) return res.status(400).json({ error: 'Missing question' });
 
-    // Get ALL data for this specific authenticated user only
-    let userTallyData = await TallyData.find({ userId }).sort({ createdAt: -1 });
+    // Get data for this specific authenticated user only
+    let userTallyData;
+    if (selectedFiles && selectedFiles.length > 0) {
+      // Filter by selected files
+      userTallyData = await TallyData.find({ 
+        userId, 
+        originalFileName: { $in: selectedFiles }
+      }).sort({ createdAt: -1 });
+      console.log('[CHAT] Filtering by selected files:', selectedFiles);
+    } else {
+      // Get all files (default behavior)
+      userTallyData = await TallyData.find({ userId }).sort({ createdAt: -1 });
+      console.log('[CHAT] Using all uploaded files');
+    }
     
     // SECURITY: Only search user's own data - no fallback to all data
     if (!userTallyData || userTallyData.length === 0) {
@@ -143,7 +229,7 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Query embedding generated for enhanced question.');
 
     // Find most relevant data chunks using enhanced vector search
-    const topChunks = findMostSimilarChunks(queryEmbedding, dateFilteredChunks, question, 20); // Increased to 20 for better context
+    const topChunks = findMostSimilarChunks(queryEmbedding, dateFilteredChunks, question, 20); // Get more candidates first
     console.log('[CHAT] Enhanced vector search completed. Found', topChunks.length, 'relevant chunks');
     
     // Also find keyword matches as backup
@@ -158,9 +244,22 @@ exports.chat = async (req, res) => {
       }
     });
     
-    console.log('[CHAT] Combined chunks for context:', combinedChunks.length);
+    // Smart chunk selection: prioritize by relevance score
+    const sortedChunks = combinedChunks.sort((a, b) => {
+      const scoreA = a.score || 0;
+      const scoreB = b.score || 0;
+      return scoreB - scoreA; // Higher scores first
+    });
+    
+    // Limit total chunks to prevent token limit issues (first pass)
+    const maxChunks = 10; // tighter cap
+    const limitedChunks = sortedChunks.slice(0, maxChunks);
+    
+    console.log('[CHAT] Smart chunk selection - Top scores:', limitedChunks.map(c => c.score?.toFixed(3)).join(', '));
+    
+    console.log('[CHAT] Combined chunks for context:', combinedChunks.length, '-> Limited to:', limitedChunks.length);
     console.log('[CHAT] Top chunks selected for context (from all user files):');
-    combinedChunks.slice(0, 5).forEach((c, i) => {
+    limitedChunks.slice(0, 5).forEach((c, i) => {
      const content = c.content || (c._doc && c._doc.content);
      const fileName = c.fileName || 'Unknown file';
     if (typeof content === 'string') {
@@ -169,14 +268,39 @@ exports.chat = async (req, res) => {
       console.log(`  Chunk ${i+1} [${fileName}]: [No content]`, c);
       }
  });
+    
+    // Log which files are being used in the response
+    const filesUsed = [...new Set(limitedChunks.map(c => c.fileName))];
+    console.log('[CHAT] Files being used in response:', filesUsed.join(', '));
 
-    // Build enhanced context with better structure and validation info
-    const context = combinedChunks.map((chunk, index) => {
-      const content = chunk.content || (chunk._doc && c._doc.content) || '';
+    // Condense content per chunk based on query type/keywords
+    const queryKeywords = buildQueryKeywords(question, queryType);
+    const condensedChunks = limitedChunks.map((chunk) => {
+      const content = chunk.content || (chunk._doc && chunk._doc.content) || '';
+      const condensed = condenseContentByKeywords(content, queryKeywords, {
+        maxLines: 120,
+        linesBefore: 0,
+        linesAfter: 0,
+        maxCharsFallback: 1200
+      });
+      return { ...chunk, condensed };
+    });
+
+    // Build enhanced context using condensed content and enforce a global size cap
+    const MAX_CONTEXT_CHARS = 16000; // global cap
+    let running = '';
+    let countIncluded = 0;
+    for (let i = 0; i < condensedChunks.length; i += 1) {
+      const chunk = condensedChunks[i];
       const fileName = chunk.fileName || 'Unknown file';
       const score = chunk.score ? ` (relevance: ${chunk.score.toFixed(3)})` : '';
-      return `[CHUNK ${index + 1} - From: ${fileName}${score}]\n${content}`;
-    }).join('\n\n');
+      const piece = `[CHUNK ${i + 1} - From: ${fileName}${score}]\n${chunk.condensed}\n\n`;
+      if ((running.length + piece.length) > MAX_CONTEXT_CHARS) break;
+      running += piece;
+      countIncluded += 1;
+    }
+    const context = running;
+    console.log('[CHAT] Condensed context uses', countIncluded, 'chunks, chars:', context.length);
 
     // Add validation context
     const validationContext = `
@@ -187,6 +311,40 @@ DATA VALIDATION SUMMARY:
 - Total debit amount: ${dataSummary.totalDebit.toLocaleString()}
 - Total credit amount: ${dataSummary.totalCredit.toLocaleString()}
 `;
+
+    // Estimate token usage to prevent overflow
+    const contextLength = context.length;
+    const validationLength = validationContext.length;
+    const questionLength = question.length;
+    const totalEstimatedTokens = Math.ceil((contextLength + validationLength + questionLength) / 4); // Rough estimation
+    
+    console.log('[CHAT] Token estimation - Context:', contextLength, 'chars, Validation:', validationLength, 'chars, Question:', questionLength, 'chars');
+    console.log('[CHAT] Estimated total tokens:', totalEstimatedTokens);
+    
+    // If estimated tokens are too high, make a second-pass tighter condensation
+    let finalContext, finalValidationContext;
+    if (totalEstimatedTokens > 6000) { // Conservative limit
+      const MAX_TIGHT_CONTEXT_CHARS = 9000;
+      let tight = '';
+      let used = 0;
+      for (let i = 0; i < condensedChunks.length; i += 1) {
+        const chunk = condensedChunks[i];
+        const fileName = chunk.fileName || 'Unknown file';
+        const score = chunk.score ? ` (relevance: ${chunk.score.toFixed(3)})` : '';
+        // Further trim each condensed block
+        const trimmed = (chunk.condensed || '').slice(0, 1200);
+        const piece = `[CHUNK ${i + 1} - From: ${fileName}${score}]\n${trimmed}\n\n`;
+        if ((tight.length + piece.length) > MAX_TIGHT_CONTEXT_CHARS) break;
+        tight += piece;
+        used += 1;
+      }
+      finalContext = tight;
+      finalValidationContext = validationContext;
+      console.log('[CHAT] Tight condensation used chunks:', used, 'chars:', finalContext.length);
+    } else {
+      finalContext = context;
+      finalValidationContext = validationContext;
+    }
 
     // Enhance prompt with query-type-specific instructions
     let extraInstructions = '';
@@ -211,7 +369,7 @@ DATA VALIDATION SUMMARY:
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt(question + extraInstructions, context + validationContext, dateContext);
+    const enhancedPrompt = createEnhancedPrompt(question + extraInstructions, finalContext + finalValidationContext, dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');

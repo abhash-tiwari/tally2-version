@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from './contexts/AuthContext';
+import FileSelector from './components/FileSelector';
 import './ChatComponent.css';
 
 const ChatComponent = ({ onClose }) => {
@@ -8,6 +9,7 @@ const ChatComponent = ({ onClose }) => {
   const [userInput, setUserInput] = useState('');
   const [answering, setAnswering] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const chatContainerRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -46,7 +48,10 @@ const ChatComponent = ({ onClose }) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ question: userMessage }),
+        body: JSON.stringify({ 
+          question: userMessage,
+          selectedFiles: selectedFiles
+        }),
       });
       const data = await res.json();
       
@@ -97,7 +102,7 @@ const ChatComponent = ({ onClose }) => {
               <div className="welcome-avatar">AI</div>
               <div className="welcome-text">
                 <h4>Welcome to Tally AI!</h4>
-                <p>I can help you analyze data from all your uploaded Tally files. Try asking me:</p>
+                <p>I can help you analyze data from your uploaded Tally files. Use the file selector above to choose specific files, or leave it as "All Files" to search everything. Try asking me:</p>
                 <ul>
                   <li>"What's my total profit this month?"</li>
                   <li>"Show me all cash vouchers"</li>
@@ -147,6 +152,12 @@ const ChatComponent = ({ onClose }) => {
 
         {/* Input Area */}
         <div className="chat-input-container">
+          {/* File Selector */}
+          <FileSelector 
+            selectedFiles={selectedFiles}
+            onFileSelectionChange={setSelectedFiles}
+          />
+          
           <form onSubmit={handleChatSubmit} className="chat-form">
             <div className="input-wrapper">
               <textarea
