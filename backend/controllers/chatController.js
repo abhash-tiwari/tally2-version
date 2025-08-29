@@ -3,7 +3,8 @@ const { getEmbedding } = require('../utils/embedding');
 const { findMostSimilarChunks, findKeywordMatches } = require('../utils/vectorSearch');
 const { preprocessQuery, extractDateContext, createEnhancedPrompt } = require('../utils/queryPreprocessor');
 const { filterChunksByDate } = require('../utils/dateFilter');
-const { createDataSummary, countVouchersByTypeAndDate } = require('../utils/dataValidator');
+const { createDataSummary, countVouchersByTypeAndDate, extractInterestOnSecuredLoans } = require('../utils/dataValidator');
+const { extractPurchaseEntries, extractBankSpecificEntries, validatePurchaseEntries, validateBankEntries } = require('../utils/purchaseBankDetector');
 const { authenticateToken } = require('../routes/auth');
 const axios = require('axios');
 
@@ -15,7 +16,7 @@ const QUERY_TYPE_KEYWORDS = {
     'sale', 'sales', 'sales account', 'sales ledger', 'sales-igst', 'sales local', 'sales lut/bond'
   ],
   purchase: [
-    'purchase', 'purc', 'purchases', 'purchase account', 'purchase ledger', 'import purchase', 'export purchase'
+    'purchase', 'purc', 'purchases', 'purchase account', 'purchase ledger', 'import purchase', 'export purchase', 'supplier', 'grn', 'goods received', 'material', 'inventory', 'stock'
   ],
   expense: [
     'expense', 'expenses', 'professional fees', 'rent', 'salary', 'bank charges', 'utility', 'travel', 'food', 'misc. expenses', 'mobile expenses', 'telephone expense', 'interest on loan', 'interest expense'
@@ -25,11 +26,37 @@ const QUERY_TYPE_KEYWORDS = {
   ]
 };
 
+// Enhanced bank detection patterns
+const BANK_PATTERNS = {
+  'icici': ['icici', 'icici bank', 'icici ltd', 'icici limited'],
+  'hdfc': ['hdfc', 'hdfc bank', 'hdfc ltd', 'hdfc limited'],
+  'sbi': ['sbi', 'state bank', 'state bank of india'],
+  'kotak': ['kotak', 'kotak bank', 'kotak mahindra'],
+  'indusind': ['indusind', 'indusind bank'],
+  'axis': ['axis', 'axis bank'],
+  'yes': ['yes', 'yes bank'],
+  'bajaj': ['bajaj', 'bajaj finance', 'bajaj finserv'],
+  'pnb': ['pnb', 'punjab national bank'],
+  'canara': ['canara', 'canara bank'],
+  'union': ['union', 'union bank'],
+  'bank of baroda': ['bob', 'bank of baroda', 'baroda bank']
+};
+
 function detectQueryType(query) {
   const lower = query.toLowerCase();
   for (const [type, keywords] of Object.entries(QUERY_TYPE_KEYWORDS)) {
     if (keywords.some(k => lower.includes(k))) {
       return type;
+    }
+  }
+  return null;
+}
+
+function detectBankQuery(query) {
+  const lower = query.toLowerCase();
+  for (const [bank, patterns] of Object.entries(BANK_PATTERNS)) {
+    if (patterns.some(pattern => lower.includes(pattern))) {
+      return bank;
     }
   }
   return null;
@@ -45,7 +72,7 @@ function filterChunksByType(chunks, type) {
 }
 
 // Build a focused keyword list based on the query and detected type
-function buildQueryKeywords(userQuestion, queryType) {
+function buildQueryKeywords(userQuestion, queryType, bankName = null) {
   const base = [
     // Common financial terms
     'voucher', 'narration', 'account', 'ledger', 'bank', 'ltd', 'limited'
@@ -54,13 +81,18 @@ function buildQueryKeywords(userQuestion, queryType) {
   if (queryType === 'loan') {
     base.push(
       'loan', 'loans', 'secured loan', 'unsecured loan', 'od', 'overdraft',
-      'bank loan', 'interest on loan', 'cc account', 'borrowing', 'finance',
-      'icici', 'kotak', 'indusind', 'hdfc', 'sbi'
+      'bank loan', 'interest on loan', 'cc account', 'borrowing', 'finance'
     );
+    
+    // Add bank-specific keywords if bank is mentioned
+    if (bankName) {
+      const bankPatterns = BANK_PATTERNS[bankName] || [bankName];
+      base.push(...bankPatterns);
+    }
   } else if (queryType === 'sales') {
     base.push('sale', 'sales', 'igst', 'cgst', 'sgst', 'invoice');
   } else if (queryType === 'purchase') {
-    base.push('purchase', 'purc', 'supplier', 'grn', 'igst', 'cgst', 'sgst');
+    base.push('purchase', 'purc', 'supplier', 'grn', 'igst', 'cgst', 'sgst', 'material', 'inventory', 'stock', 'goods received');
   } else if (queryType === 'expense') {
     base.push('expense', 'expenses', 'rent', 'salary', 'bank charges', 'fees');
   } else if (queryType === 'receipt') {
@@ -119,12 +151,13 @@ function condenseContentByKeywords(content, keywords, options = {}) {
 
 exports.chat = async (req, res) => {
   try {
-    const { question, selectedFiles } = req.body;
+    const { question, selectedFiles, chatHistory = [] } = req.body;
     const userId = req.user.userId;
     
     console.log('[CHAT] Authenticated user:', req.user.email, 'asking:', question);
     console.log('[CHAT] Received question:', question, 'for user:', userId);
     console.log('[CHAT] Selected files:', selectedFiles);
+    console.log('[CHAT] Chat history length:', chatHistory.length);
     if (!question) return res.status(400).json({ error: 'Missing question' });
 
     // Get data for this specific authenticated user only
@@ -180,8 +213,37 @@ exports.chat = async (req, res) => {
     const dateContext = extractDateContext(question);
     console.log('[CHAT] Date context detected:', dateContext);
     
-    // Detect query type and filter data chunks accordingly
+    // Detect query type and bank name
     const queryType = detectQueryType(question);
+    const bankName = detectBankQuery(question);
+    console.log('[CHAT] Query type detected:', queryType, 'Bank detected:', bankName);
+    
+    // Enhanced purchase entry detection
+    if (queryType === 'purchase') {
+      const purchaseEntries = extractPurchaseEntries(allDataChunks);
+      const purchaseValidation = validatePurchaseEntries(purchaseEntries);
+      console.log('[CHAT] Found', purchaseEntries.length, 'purchase-related entries');
+      console.log('[CHAT] Purchase validation:', purchaseValidation);
+      
+      // If user specifically asks for purchase entries, prioritize them
+      if (question.toLowerCase().includes('purchase') || question.toLowerCase().includes('purchases')) {
+        console.log('[CHAT] Purchase-specific query detected, prioritizing purchase entries');
+      }
+    }
+    
+    // Enhanced bank-specific query handling
+    if (bankName) {
+      const bankEntries = extractBankSpecificEntries(allDataChunks, bankName);
+      const bankValidation = validateBankEntries(bankEntries, bankName);
+      console.log('[CHAT] Found', bankEntries.length, 'entries for bank:', bankName);
+      console.log('[CHAT] Bank validation:', bankValidation);
+      
+      // Prioritize bank-specific entries for bank queries
+      if (bankEntries.length > 0) {
+        console.log('[CHAT] Bank-specific entries found, will prioritize in response');
+      }
+    }
+    
     const filteredChunks = filterChunksByType(allDataChunks, queryType);
     if (filteredChunks.length === 0) {
       console.log('[CHAT] No relevant data found for query type:', queryType);
@@ -221,7 +283,9 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Data summary:', {
       totalVouchers: dataSummary.totalVouchers,
       voucherTypes: Object.keys(dataSummary.voucherTypes),
-      dateRange: dataSummary.dateRange
+      dateRange: dataSummary.dateRange,
+      purchaseEntries: dataSummary.purchaseEntries,
+      bankEntries: dataSummary.bankEntries
     });
     
     // Embed the enhanced question
@@ -274,7 +338,7 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Files being used in response:', filesUsed.join(', '));
 
     // Condense content per chunk based on query type/keywords
-    const queryKeywords = buildQueryKeywords(question, queryType);
+    const queryKeywords = buildQueryKeywords(question, queryType, bankName);
     const condensedChunks = limitedChunks.map((chunk) => {
       const content = chunk.content || (chunk._doc && chunk._doc.content) || '';
       const condensed = condenseContentByKeywords(content, queryKeywords, {
@@ -303,14 +367,70 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Condensed context uses', countIncluded, 'chunks, chars:', context.length);
 
     // Add validation context
-    const validationContext = `
+    let validationContext = `
 DATA VALIDATION SUMMARY:
 - Total vouchers available: ${dataSummary.totalVouchers}
 - Voucher types found: ${Object.keys(dataSummary.voucherTypes).join(', ')}
 - Date range: ${dataSummary.dateRange.min ? dataSummary.dateRange.min.toDateString() : 'N/A'} to ${dataSummary.dateRange.max ? dataSummary.dateRange.max.toDateString() : 'N/A'}
 - Total debit amount: ${dataSummary.totalDebit.toLocaleString()}
 - Total credit amount: ${dataSummary.totalCredit.toLocaleString()}
+- Purchase entries found: ${dataSummary.purchaseEntries}
+- Banks mentioned: ${dataSummary.bankEntries.join(', ')}
 `;
+
+    // Add enhanced validation context for specific query types
+    if (queryType === 'purchase') {
+      const purchaseEntries = extractPurchaseEntries(allDataChunks);
+      const purchaseValidation = validatePurchaseEntries(purchaseEntries);
+      validationContext += `
+PURCHASE VALIDATION DETAILS:
+- Total purchase entries: ${purchaseValidation.total}
+- Entry types found: ${Object.keys(purchaseValidation.byType).join(', ')}
+- Completeness score: ${purchaseValidation.completeness.toFixed(1)}%
+- Files with purchase data: ${Object.keys(purchaseValidation.byFile).join(', ')}
+- Suggestions: ${purchaseValidation.suggestions.join('; ')}
+`;
+    }
+
+    if (bankName) {
+      const bankEntries = extractBankSpecificEntries(allDataChunks, bankName);
+      const bankValidation = validateBankEntries(bankEntries, bankName);
+      validationContext += `
+BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
+- Total ${bankName} entries: ${bankValidation.total}
+- Exact matches: ${bankValidation.exactMatches}
+- Variation matches: ${bankValidation.variationMatches}
+- Accuracy score: ${bankValidation.accuracy.toFixed(1)}%
+- Suggestions: ${bankValidation.suggestions.join('; ')}
+`;
+    }
+
+    // Special handling: interest on secured loans (captures JRNL and bank-specific cases)
+    const isInterestSecuredLoanQuery = /interest on (secured )?loan|secured loan interest|loan interest/i.test(question);
+    let interestEntriesSummary = '';
+    if (isInterestSecuredLoanQuery) {
+      const requireJournal = /\b(jrnl|journal)\b/i.test(question);
+      const bankFromQuery = detectBankQuery(question); // returns normalized bank key if found
+      const interestEntries = extractInterestOnSecuredLoans(allDataChunks, dateContext, bankFromQuery, requireJournal);
+
+      if (interestEntries.length > 0) {
+        const total = interestEntries.reduce((s, e) => s + (e.amount || 0), 0);
+        const byBank = {};
+        interestEntries.forEach(e => {
+          const key = (e.account || 'unknown').toLowerCase();
+          byBank[key] = (byBank[key] || 0) + (e.amount || 0);
+        });
+        const top5 = Object.entries(byBank).slice(0, 5).map(([k, v]) => `- ${k}: ${v.toLocaleString()}`).join('\n');
+
+        interestEntriesSummary = `\n\nPRECOMPUTED INTEREST-ON-SECURED-LOAN SUMMARY:\n- Entries found: ${interestEntries.length}\n- Total interest amount: ${total.toLocaleString()}\n- Top accounts by interest:\n${top5}\n`;
+
+        // Also add a compact table-like list for the model
+        const sample = interestEntries.slice(0, 15).map(e => `- ${e.date} | ${e.type} | ${e.account} | ${e.narration} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`).join('\n');
+        interestEntriesSummary += `\nSample entries:\n${sample}\n`;
+      } else {
+        interestEntriesSummary = `\n\nPRECOMPUTED INTEREST-ON-SECURED-LOAN SUMMARY:\n- No matching entries found with filters (JRNL=${requireJournal ? 'yes' : 'no'}, Bank=${bankFromQuery || 'any'})\n`;
+      }
+    }
 
     // Estimate token usage to prevent overflow
     const contextLength = context.length;
@@ -353,11 +473,16 @@ DATA VALIDATION SUMMARY:
     } else if (queryType === 'sales') {
       extraInstructions = '\nIMPORTANT: Only consider entries where the account or narration contains "Sale" or "Sales". Ignore unrelated transactions.';
     } else if (queryType === 'purchase') {
-      extraInstructions = '\nIMPORTANT: Only include entries with "Purchase" or "Purc" in the account or narration. Ignore sales, receipts, and expenses.';
+      extraInstructions = '\nIMPORTANT: Include ALL purchase-related entries (purchase, supplier, GRN, material, inventory, stock, goods received). Do not overlook any purchase transactions. Check for variations like "purc", "supplier", "material", "inventory", "stock", "goods received", "GRN".';
     } else if (queryType === 'expense') {
       extraInstructions = '\nIMPORTANT: Only include entries with "Expense" or related terms in the account or narration. Ignore purchases, sales, and receipts.';
     } else if (queryType === 'receipt') {
       extraInstructions = '\nIMPORTANT: Only include entries with "Receipt" or "Rcpt" in the account or narration. Ignore unrelated transactions.';
+    }
+
+    // Add bank-specific instructions if bank is detected
+    if (bankName) {
+      extraInstructions += `\nCRITICAL BANK FILTER: You are ONLY allowed to analyze data related to ${bankName.toUpperCase()} bank. Ignore ALL data from other banks. When counting vouchers, verify each entry specifically mentions ${bankName.toUpperCase()} or its variations. Do not include entries from other banks like Bajaj, HDFC, SBI, etc.`;
     }
 
     // Add date-specific instructions if date context is detected
@@ -369,38 +494,78 @@ DATA VALIDATION SUMMARY:
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt(question + extraInstructions, finalContext + finalValidationContext, dateContext);
+    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary), (finalContext + finalValidationContext), dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');
     console.log('[CHAT] Date context:', dateContext);
+    console.log('[CHAT] Bank context:', bankName);
     console.log('[CHAT] Calling OpenAI API...');
 
-    // Call OpenAI API using axios
+    // Prepare chat history as proper OpenAI messages (limit to last 8 turns to control tokens)
+    const historyMessages = Array.isArray(chatHistory)
+      ? chatHistory.slice(-8).map(msg => ({
+          role: msg.role === 'assistant' ? 'assistant' : 'user',
+          content: String(msg.content || '')
+        }))
+      : [];
+
+    // Compose messages array
+    const systemMessage = { 
+      role: 'system', 
+      content: `You are a helpful and knowledgeable Tally data analysis assistant with a conversational, ChatGPT-like style. Follow these CRITICAL rules:
+
+1. **RESPONSE STYLE**: Be conversational, friendly, and helpful like ChatGPT. Use natural language, provide context, and explain your findings clearly. If the user says things like "explain it" or "why", elaborate on the previous answer with a step-by-step breakdown and plain-language summary.
+
+2. **ACCURACY & PRECISION**: 
+   - When a specific date/month/year is mentioned, ONLY analyze data from that exact period
+   - Each "Voucher:" line represents one voucher - count them exactly once
+   - Never include data from wrong periods or make assumptions
+   - Always verify dates match the requested period before counting
+
+3. **BANK-SPECIFIC QUERIES**: 
+   - If user asks about a specific bank (e.g., "ICICI bank loan"), ONLY include data from that bank
+   - Do NOT include data from other banks (e.g., if asking about ICICI, don't include Bajaj)
+   - Use exact bank name matching
+
+4. **PURCHASE ENTRIES**: 
+   - Include ALL purchase-related entries (purchase, supplier, GRN, material, inventory, stock, goods received)
+   - Do not overlook any purchase transactions
+   - Check for variations and related terms
+
+5. **RESPONSE STRUCTURE**:
+   - Start with a clear summary of what you found
+   - Provide detailed breakdown with specific numbers and dates
+   - Use bullet points or numbered lists for clarity
+   - Include relevant file names and data sources
+   - End with any important insights or recommendations
+
+6. **FOLLOW-UP QUESTIONS**: 
+   - Consider the chat history context for follow-up questions
+   - Maintain conversation continuity
+   - Reference previous answers when relevant
+
+7. **CLARITY**: State exactly which date range you analyzed and what you found
+8. **CONTEXT**: Consider all provided chunks when answering, not just the first few
+9. **VALIDATION**: Use the provided data summary to verify your analysis
+
+For date-specific queries like "sales vouchers in July 2025", ONLY count vouchers with dates in July 2025.` 
+    };
+
+    const messages = [
+      systemMessage,
+      ...historyMessages,
+      { role: 'user', content: multiFilePrompt }
+    ];
+
+    // Call OpenAI API using axios with enhanced system prompt and real history
     const openaiRes = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
         model: 'gpt-3.5-turbo',
-        messages: [
-          { 
-            role: 'system', 
-            content: `You are a precise Tally data analysis assistant. Follow these CRITICAL rules:
-
-1. DATE FILTERING: When a specific date/month/year is mentioned, ONLY analyze data from that exact period
-2. VOUCHER COUNTING: Each "Voucher:" line represents one voucher - count them exactly once
-3. ACCURACY: Never include data from wrong periods or make assumptions
-4. VERIFICATION: Always verify dates match the requested period before counting
-5. CLARITY: State exactly which date range you analyzed and what you found
-6. CONSISTENCY: Use the same counting method for similar queries
-7. CONTEXT: Consider all provided chunks when answering, not just the first few
-8. VALIDATION: Use the provided data summary to verify your analysis
-
-For date-specific queries like "sales vouchers in July 2025", ONLY count vouchers with dates in July 2025.` 
-          },
-          { role: 'user', content: multiFilePrompt }
-        ],
-        max_tokens: 1024, // Increased for more detailed responses
-        temperature: 0.1 // Reduced for more consistent responses
+        messages,
+        max_tokens: 1500,
+        temperature: 0.3
       },
       {
         headers: {

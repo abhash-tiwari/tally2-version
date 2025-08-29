@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import FileSelector from './components/FileSelector';
 import './ChatComponent.css';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const ChatComponent = ({ onClose }) => {
   const { token } = useAuth();
@@ -42,6 +44,8 @@ const ChatComponent = ({ onClose }) => {
 
     try {
       console.log('[FRONTEND] Sending question:', userMessage);
+      console.log('[FRONTEND] Chat history length:', chatHistory.length);
+      
       const res = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
         headers: { 
@@ -50,7 +54,9 @@ const ChatComponent = ({ onClose }) => {
         },
         body: JSON.stringify({ 
           question: userMessage,
-          selectedFiles: selectedFiles
+          selectedFiles: selectedFiles,
+          // Include the latest user message since setState is async
+          chatHistory: [...chatHistory, { role: 'user', content: userMessage }]
         }),
       });
       const data = await res.json();
@@ -120,7 +126,15 @@ const ChatComponent = ({ onClose }) => {
                 {msg.role === 'user' ? '👤' : 'AI'}
               </div>
               <div className="message-content">
-                <div className="message-text">{msg.content}</div>
+                <div className="message-text">
+                  {msg.role === 'assistant' ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} className="markdown-body">
+                      {msg.content}
+                    </ReactMarkdown>
+                  ) : (
+                    msg.content
+                  )}
+                </div>
                 <div className="message-time">
                   {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </div>
