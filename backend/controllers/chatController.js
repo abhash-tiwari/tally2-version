@@ -44,6 +44,84 @@ function extractPurchasesFromText(content, wantedMonthsSet, wantedYearsSet) {
   return results;
 }
 
+// Helper: extract payment entries (Type: Pymt) handling multiple amount column variants
+function extractPaymentsFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  
+  for (const line of lines) {
+    if (!line.includes('"Pymt"')) continue;
+    
+    const dm = dateRegex.exec(line);
+    if (!dm) continue;
+    
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    
+    // Split by comma and handle quoted fields properly
+    const fields = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        fields.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current) fields.push(current);
+    
+    // Find date, account, and amount from parsed fields
+    const date = dm[0]; // Use matched date
+    let account = '';
+    let amount = 0;
+    
+    // Look for account name (usually in quotes after date)
+    for (let i = 1; i < fields.length; i++) {
+      const field = fields[i].replace(/^"|"$/g, ''); // Remove quotes
+      if (field && field !== 'Pymt' && field !== '' && !field.match(/^-?[0-9,.]+$/)) {
+        account = field;
+        break;
+      }
+    }
+    
+    // Look for amount (first non-empty numeric field after Pymt)
+    let foundPymt = false;
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i].replace(/^"|"$/g, '');
+      if (field === 'Pymt') {
+        foundPymt = true;
+        continue;
+      }
+      if (foundPymt && field && field.match(/^-?[0-9,.]+$/)) {
+        const amtRaw = field.replace(/,/g, '');
+        const parsedAmount = Number(amtRaw);
+        if (!Number.isNaN(parsedAmount) && parsedAmount !== 0) {
+          amount = parsedAmount;
+          break;
+        }
+      }
+    }
+    
+    if (account && amount !== 0) {
+      results.push({ date, account, amount });
+    }
+  }
+  return results;
+}
+
 // Helper: extract sales entries (Type: Sale) from CSV-like content for a specific month/year
 function extractSalesFromText(content, wantedMonthsSet, wantedYearsSet) {
   const results = [];
@@ -125,6 +203,9 @@ const QUERY_TYPE_KEYWORDS = {
   ],
   purchase: [
     'purchase', 'purc', 'purchases', 'purchase account', 'purchase ledger', 'import purchase', 'export purchase', 'supplier', 'grn', 'goods received', 'material', 'inventory', 'stock'
+  ],
+  payment: [
+    'payment', 'payments', 'pymt', 'pymts', 'paymt'
   ],
   journal: [
     'journal', 'jrnl', 'jrnl.', 'journal voucher'
@@ -208,6 +289,8 @@ function buildQueryKeywords(userQuestion, queryType, bankName = null) {
     base.push('sale', 'sales', 'igst', 'cgst', 'sgst', 'invoice');
   } else if (queryType === 'purchase') {
     base.push('purchase', 'purc', 'supplier', 'grn', 'igst', 'cgst', 'sgst', 'material', 'inventory', 'stock', 'goods received');
+  } else if (queryType === 'payment') {
+    base.push('payment', 'pymt', 'pymts', 'debit', 'credit', 'voucher');
   } else if (queryType === 'journal') {
     base.push('journal', 'jrnl', 'tds', 'rent');
   } else if (queryType === 'expense') {
@@ -325,6 +408,7 @@ exports.chat = async (req, res) => {
       console.log('[CHAT] Example dataChunk:', allDataChunks[0]);
     }
 
+
     // Preprocess the question for better matching
     const enhancedQuestion = preprocessQuery(question);
     const dateContext = extractDateContext(question);
@@ -361,7 +445,23 @@ exports.chat = async (req, res) => {
       }
     }
     
-    const filteredChunks = filterChunksByType(allDataChunks, queryType);
+    // If a specific month and year are requested, prefilter by monthKey to ensure full coverage
+    let prefilteredChunks = allDataChunks;
+    if (dateContext && dateContext.isDateSpecific && (dateContext.months || []).length === 1 && (dateContext.years || []).length === 1) {
+      const monthAbbrevs = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+      const mKey = String(dateContext.months[0]).toLowerCase().slice(0,3);
+      const yRaw = String(dateContext.years[0]);
+      const yyyy = yRaw.length === 2 ? (parseInt(yRaw, 10) < 70 ? 2000 + parseInt(yRaw, 10) : 1900 + parseInt(yRaw, 10)) : parseInt(yRaw, 10);
+      const yyyyStr = String(yyyy).padStart(4, '0');
+      const mm = monthAbbrevs[mKey];
+      if (mm) {
+        const monthKey = `${yyyyStr}-${mm}`;
+        prefilteredChunks = allDataChunks.filter(ch => (ch.monthKey || '') === monthKey);
+        console.log('[CHAT] monthKey prefilter applied:', monthKey, 'chunks:', prefilteredChunks.length);
+      }
+    }
+
+    const filteredChunks = filterChunksByType(prefilteredChunks, queryType);
     if (filteredChunks.length === 0) {
       console.log('[CHAT] No relevant data found for query type:', queryType);
       return res.status(404).json({ error: 'No relevant data found for your query type.' });
@@ -370,29 +470,88 @@ exports.chat = async (req, res) => {
     // Apply date filtering if date context is detected
     let dateFilteredChunks = filteredChunks;
     if (dateContext.isDateSpecific) {
+      console.log('[CHAT] Applying date filtering with context:', dateContext);
       dateFilteredChunks = filterChunksByDate(filteredChunks, dateContext);
       console.log('[CHAT] Date filtering applied. Chunks before:', filteredChunks.length, 'after:', dateFilteredChunks.length);
       
-      if (dateFilteredChunks.length === 0) {
-        console.log('[CHAT] No data found for specified date range');
+      // Debug: Check if any chunks contain May 14 data
+      const chunksWithMay14 = dateFilteredChunks.filter(ch => {
+        const content = ch.content || (ch._doc && ch._doc.content) || '';
+        return content.includes('14-May-25');
+      });
+      console.log('[CHAT] Chunks containing 14-May-25 after date filtering:', chunksWithMay14.length);
+    }
+    
+    // Placeholder for deterministic payment summary
+    let paymentSummary = '';
+
+    // Deterministic precomputation: payments (Pymt) for date-specific queries
+    if (queryType === 'payment' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      console.log('[CHAT] Payment extraction - wanted months:', Array.from(wantedMonths), 'years:', Array.from(wantedYears));
+      console.log('[CHAT] Payment extraction - scanning', dateFilteredChunks.length, 'date-filtered chunks');
+      
+      const entries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
         
-        // Provide more detailed debugging information
-        const allDates = [];
-        filteredChunks.forEach(chunk => {
-          const content = chunk.content || '';
-          const dateMatches = content.match(/\d{1,2}-[A-Za-z]{3}-\d{2}/g) || [];
-          allDates.push(...dateMatches);
-        });
+        // Debug: Check if this chunk contains May 14 data
+        if (text.includes('14-May-25')) {
+          console.log('[CHAT] Found chunk with 14-May-25 data, length:', text.length);
+          console.log('[CHAT] Sample of chunk:', text.substring(0, 500));
+        }
         
-        console.log('[CHAT] Available dates in data:', allDates.slice(0, 10)); // Show first 10 dates
-        console.log('[CHAT] Requested date range:', dateContext.months.join(', '), dateContext.years.join(', '));
-        
-        return res.status(404).json({ 
-          error: `No data found for ${dateContext.months.join(', ')} ${dateContext.years.join(', ')}. Available data appears to be from different months. Please check your date range or upload data for this period.`,
-          availableDates: allDates.slice(0, 10),
-          requestedRange: `${dateContext.months.join(', ')} ${dateContext.years.join(', ')}`
-        });
+        const found = extractPaymentsFromText(text, wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) {
+          console.log('[CHAT] Extracted', found.length, 'payments from chunk, sample:', found.slice(0, 3));
+          entries.push(...found);
+        }
       }
+      
+      // Compute totals and create comprehensive summary with ALL entries
+      const total = entries.reduce((s, e) => s + (e.amount || 0), 0);
+      
+      // Group entries by date for complete listing
+      const entriesByDate = {};
+      entries.forEach(e => {
+        if (!entriesByDate[e.date]) entriesByDate[e.date] = [];
+        entriesByDate[e.date].push(e);
+      });
+      
+      // Create complete listing of ALL entries organized by date
+      const allEntriesText = Object.keys(entriesByDate)
+        .sort((a, b) => {
+          // Sort dates chronologically
+          const parseDate = (dateStr) => {
+            const [day, month, year] = dateStr.split('-');
+            return new Date(`20${year}`, ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].indexOf(month), parseInt(day));
+          };
+          return parseDate(a) - parseDate(b);
+        })
+        .map(date => {
+          const dayEntries = entriesByDate[date];
+          const entryList = dayEntries.map(e => `  • ${e.account}: ${e.amount.toLocaleString()}`).join('\n');
+          return `${date}:\n${entryList}`;
+        })
+        .join('\n\n');
+      
+      paymentSummary = `\n\n=== COMPLETE PAYMENT ENTRIES LIST ===\n` +
+        `TOTAL: ${entries.length} entries, Amount: ${total.toLocaleString()}\n\n` +
+        `${allEntriesText}\n\n` +
+        `=== END COMPLETE LIST ===\n`;
+      console.log('[CHAT] Precomputed payments (date-filtered scan):', { count: entries.length, total });
+      
+      // Debug: Check if May 14 entries are in the results
+      const may14Entries = entries.filter(e => e.date.includes('14-May-25'));
+      console.log('[CHAT] May 14 entries found:', may14Entries.length, may14Entries.slice(0, 3));
     }
     
     // Create data summary for validation
@@ -410,8 +569,10 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Query embedding generated for enhanced question.');
 
     // Find most relevant data chunks using enhanced vector search
-    const topChunks = findMostSimilarChunks(queryEmbedding, dateFilteredChunks, question, 20); // Get more candidates first
-    console.log('[CHAT] Enhanced vector search completed. Found', topChunks.length, 'relevant chunks');
+    // For date-specific queries, get more chunks to ensure complete coverage
+    const vectorSearchLimit = dateContext && dateContext.isDateSpecific ? Math.min(dateFilteredChunks.length, 50) : 20;
+    const topChunks = findMostSimilarChunks(queryEmbedding, dateFilteredChunks, question, vectorSearchLimit);
+    console.log('[CHAT] Enhanced vector search completed. Found', topChunks.length, 'relevant chunks (limit:', vectorSearchLimit, ')');
     
     // Also find keyword matches as backup
     const keywordMatches = findKeywordMatches(dateFilteredChunks, question);
@@ -503,8 +664,11 @@ exports.chat = async (req, res) => {
       console.log('[CHAT] Per-day coverage selected', perDayFirst.length, 'unique day chunks for month query.');
     }
 
-    // Build enhanced context using final ordered chunks and enforce a global size cap
-    const MAX_CONTEXT_CHARS = 16000; // global cap
+    // Build enhanced context using final ordered chunks
+    // For date-specific queries, include ALL chunks to ensure complete coverage
+    const isDateSpecificQuery = dateContext && dateContext.isDateSpecific;
+    const MAX_CONTEXT_CHARS = isDateSpecificQuery ? 50000 : 16000; // Higher limit for date queries
+    
     let running = '';
     let countIncluded = 0;
     for (let i = 0; i < finalOrderedChunks.length; i += 1) {
@@ -512,12 +676,27 @@ exports.chat = async (req, res) => {
       const fileName = chunk.fileName || 'Unknown file';
       const score = chunk.score ? ` (relevance: ${chunk.score.toFixed(3)})` : '';
       const piece = `[CHUNK ${i + 1} - From: ${fileName}${score}]\n${chunk.condensed}\n\n`;
-      if ((running.length + piece.length) > MAX_CONTEXT_CHARS) break;
+      
+      // For date-specific queries, be more generous with context inclusion
+      if (!isDateSpecificQuery && (running.length + piece.length) > MAX_CONTEXT_CHARS) break;
+      if (isDateSpecificQuery && (running.length + piece.length) > MAX_CONTEXT_CHARS) {
+        // For date queries, try to include at least 80% of chunks even if over limit
+        const minChunksToInclude = Math.floor(finalOrderedChunks.length * 0.8);
+        if (countIncluded < minChunksToInclude) {
+          running += piece;
+          countIncluded += 1;
+          continue;
+        } else {
+          break;
+        }
+      }
+      
       running += piece;
       countIncluded += 1;
     }
     const context = running;
     console.log('[CHAT] Condensed context included', countIncluded, 'of', finalOrderedChunks.length, 'matched chunks. Total context chars:', context.length);
+    console.log('[CHAT] Date-specific query:', isDateSpecificQuery, '- Used higher context limit:', MAX_CONTEXT_CHARS);
 
     // Add validation context
     let validationContext = `
@@ -713,6 +892,8 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       extraInstructions = '\nIMPORTANT: Only include entries with "Expense" or related terms in the account or narration. Ignore purchases, sales, and receipts.';
     } else if (queryType === 'receipt') {
       extraInstructions = '\nIMPORTANT: Only include entries with "Receipt" or "Rcpt" in the account or narration. Ignore unrelated transactions.';
+    } else if (queryType === 'payment') {
+      extraInstructions = '\nCRITICAL: Use the COMPLETE PAYMENT ENTRIES LIST provided in the context. This contains ALL payment entries found. Present the complete list organized by date, showing every single entry.';
     }
 
     // Add bank-specific instructions if bank is detected
@@ -729,7 +910,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + journalSummary), (finalContext + finalValidationContext), dateContext);
+    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + journalSummary + paymentSummary), (finalContext + finalValidationContext), dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');
@@ -795,12 +976,16 @@ For date-specific queries like "sales vouchers in July 2025", ONLY count voucher
     ];
 
     // Call OpenAI API using axios with enhanced system prompt and real history
+    // Use higher token limit for date-specific queries to ensure complete responses
+    const maxTokens = (dateContext && dateContext.isDateSpecific) ? 3000 : 1500;
+    console.log('[CHAT] Using max_tokens:', maxTokens, 'for date-specific query:', dateContext?.isDateSpecific);
+    
     const openaiRes = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
         model: OPENAI_MODEL,
         messages,
-        max_tokens: 1500,
+        max_tokens: maxTokens,
         temperature: 0.3
       },
       {
