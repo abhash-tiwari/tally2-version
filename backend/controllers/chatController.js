@@ -8,15 +8,126 @@ const { extractPurchaseEntries, extractBankSpecificEntries, validatePurchaseEntr
 const { authenticateToken } = require('../routes/auth');
 const axios = require('axios');
 
+// Select OpenAI model via env with a safe default
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
+console.log(`Using OpenAI model: ${OPENAI_MODEL}`);
+
+// Helper: extract purchase entries from CSV-like content for a specific month/year
+function extractPurchasesFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  // Pattern example: 30-Oct-23,"Shreenath Shipping Agency","","Purc",,264678.00,
+  const lineRegex = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Purc",,(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|-?[0-9]+(?:\.[0-9]+)?)\b.*$/m;
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.includes('"Purc"')) continue;
+    const dm = dateRegex.exec(line);
+    if (!dm) continue;
+    const day = dm[1];
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    const m = lineRegex.exec(line);
+    if (m) {
+      const date = m[1];
+      const account = m[2] || '';
+      const amtRaw = m[3].replace(/,/g, '');
+      const amount = Number(amtRaw);
+      if (!Number.isNaN(amount)) {
+        results.push({ date, account, amount });
+      }
+    }
+  }
+  return results;
+}
+
+// Helper: extract sales entries (Type: Sale) from CSV-like content for a specific month/year
+function extractSalesFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  // Handle both common layouts after Type field:
+  // A) 18-Oct-24,"Account","","Sale",-123.45,,
+  // B) 18-Oct-24,"Account","","Sale",,123.45,
+  const lineRegexA = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|-?[0-9]+(?:\.[0-9]+)?)\b.*$/m;
+  const lineRegexB = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",,(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|-?[0-9]+(?:\.[0-9]+)?)\b.*$/m;
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.includes('"Sale"')) continue;
+    const dm = dateRegex.exec(line);
+    if (!dm) continue;
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    let m = lineRegexA.exec(line);
+    if (!m) m = lineRegexB.exec(line);
+    if (m) {
+      const date = m[1];
+      const account = m[2] || '';
+      const amtRaw = m[3].replace(/,/g, '');
+      const amount = Number(amtRaw);
+      if (!Number.isNaN(amount)) {
+        results.push({ date, account, amount });
+      }
+    }
+  }
+  return results;
+}
+
+// Helper: extract entries for a given voucher type token (e.g., 'Jrnl') with date filters
+function extractEntriesOfTypeFromText(content, typeToken, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  // Example: 1-May-24,"Rent- Kanakia Office","","Jrnl",-132300.00,, ...
+  const typeQuoted = typeToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lineRegex = new RegExp(
+    `^(\\d{1,2}-[A-Za-z]{3}-\\d{2}),"([^"]*)","","${typeQuoted}",(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]+)?|-?[0-9]+(?:\\.[0-9]+)?)\\b.*$`,
+    'm'
+  );
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.includes(`"${typeToken}"`)) continue;
+    const dm = dateRegex.exec(line);
+    if (!dm) continue;
+    const day = dm[1];
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    const m = lineRegex.exec(line);
+    if (m) {
+      const date = m[1];
+      const account = m[2] || '';
+      const amtRaw = m[3].replace(/,/g, '');
+      const amount = Number(amtRaw);
+      if (!Number.isNaN(amount)) {
+        results.push({ date, account, amount });
+      }
+    }
+  }
+  return results;
+}
+
 const QUERY_TYPE_KEYWORDS = {
   loan: [
     'loan', 'od', 'overdraft', 'secured loan', 'unsecured loan', 'borrowing', 'debt', 'credit facility', 'bank loan', 'cc account', 'bill discounting'
   ],
   sales: [
+    // Use restrained keywords; filtering function will enforce exact Type: Sale where possible
     'sale', 'sales', 'sales account', 'sales ledger', 'sales-igst', 'sales local', 'sales lut/bond'
   ],
   purchase: [
     'purchase', 'purc', 'purchases', 'purchase account', 'purchase ledger', 'import purchase', 'export purchase', 'supplier', 'grn', 'goods received', 'material', 'inventory', 'stock'
+  ],
+  journal: [
+    'journal', 'jrnl', 'jrnl.', 'journal voucher'
   ],
   expense: [
     'expense', 'expenses', 'professional fees', 'rent', 'salary', 'bank charges', 'utility', 'travel', 'food', 'misc. expenses', 'mobile expenses', 'telephone expense', 'interest on loan', 'interest expense'
@@ -67,6 +178,10 @@ function filterChunksByType(chunks, type) {
   const keywords = QUERY_TYPE_KEYWORDS[type];
   return chunks.filter(chunk => {
     const content = (chunk.content || '').toLowerCase();
+    if (type === 'sales') {
+      // Generic keyword-based filtering for sales (no special exclusions)
+      return keywords.some(k => content.includes(k));
+    }
     return keywords.some(k => content.includes(k));
   });
 }
@@ -93,6 +208,8 @@ function buildQueryKeywords(userQuestion, queryType, bankName = null) {
     base.push('sale', 'sales', 'igst', 'cgst', 'sgst', 'invoice');
   } else if (queryType === 'purchase') {
     base.push('purchase', 'purc', 'supplier', 'grn', 'igst', 'cgst', 'sgst', 'material', 'inventory', 'stock', 'goods received');
+  } else if (queryType === 'journal') {
+    base.push('journal', 'jrnl', 'tds', 'rent');
   } else if (queryType === 'expense') {
     base.push('expense', 'expenses', 'rent', 'salary', 'bank charges', 'fees');
   } else if (queryType === 'receipt') {
@@ -308,54 +425,90 @@ exports.chat = async (req, res) => {
       }
     });
     
-    // Smart chunk selection: prioritize by relevance score
+    // Smart chunk selection: prioritize by relevance score and use ALL matched chunks (no slicing)
     const sortedChunks = combinedChunks.sort((a, b) => {
       const scoreA = a.score || 0;
       const scoreB = b.score || 0;
       return scoreB - scoreA; // Higher scores first
     });
     
-    // Limit total chunks to prevent token limit issues (first pass)
-    const maxChunks = 10; // tighter cap
-    const limitedChunks = sortedChunks.slice(0, maxChunks);
-    
-    console.log('[CHAT] Smart chunk selection - Top scores:', limitedChunks.map(c => c.score?.toFixed(3)).join(', '));
-    
-    console.log('[CHAT] Combined chunks for context:', combinedChunks.length, '-> Limited to:', limitedChunks.length);
-    console.log('[CHAT] Top chunks selected for context (from all user files):');
-    limitedChunks.slice(0, 5).forEach((c, i) => {
-     const content = c.content || (c._doc && c._doc.content);
-     const fileName = c.fileName || 'Unknown file';
-    if (typeof content === 'string') {
-      console.log(`  Chunk ${i+1} [${fileName}]: ${content.substring(0, 100)}...`);
-    } else {
-      console.log(`  Chunk ${i+1} [${fileName}]: [No content]`, c);
+    console.log('[CHAT] Matched chunks (after dedupe):', sortedChunks.length);
+    console.log('[CHAT] Example of top matched chunks (up to 5 shown):');
+    sortedChunks.slice(0, 5).forEach((c, i) => {
+      const content = c.content || (c._doc && c._doc.content);
+      const fileName = c.fileName || 'Unknown file';
+      if (typeof content === 'string') {
+        console.log(`  Chunk ${i+1} [${fileName}]: ${content.substring(0, 100)}...`);
+      } else {
+        console.log(`  Chunk ${i+1} [${fileName}]: [No content]`, c);
       }
- });
+    });
     
     // Log which files are being used in the response
-    const filesUsed = [...new Set(limitedChunks.map(c => c.fileName))];
+    const filesUsed = [...new Set(sortedChunks.map(c => c.fileName))];
     console.log('[CHAT] Files being used in response:', filesUsed.join(', '));
 
     // Condense content per chunk based on query type/keywords
     const queryKeywords = buildQueryKeywords(question, queryType, bankName);
-    const condensedChunks = limitedChunks.map((chunk) => {
+    const condensedChunks = sortedChunks.map((chunk) => {
       const content = chunk.content || (chunk._doc && chunk._doc.content) || '';
       const condensed = condenseContentByKeywords(content, queryKeywords, {
         maxLines: 120,
         linesBefore: 0,
         linesAfter: 0,
-        maxCharsFallback: 1200
+        maxCharsFallback: 800
       });
       return { ...chunk, condensed };
     });
 
-    // Build enhanced context using condensed content and enforce a global size cap
+    // Reorder to guarantee date coverage for month-specific queries: first include one chunk per distinct day, then remaining by relevance
+    let finalOrderedChunks = condensedChunks;
+    if (dateContext && dateContext.isDateSpecific && dateContext.months && dateContext.months.length > 0) {
+      // Build month tokens like 'Oct' from dateContext; prefer abbreviated month forms
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        dateContext.months
+          .map(m => m.toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2))); // match YY format
+
+      const daySeen = new Set();
+      const perDayFirst = [];
+      const rest = [];
+
+      const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+      for (const ch of condensedChunks) {
+        const text = ch.condensed || '';
+        const m = dateRegex.exec(text);
+        if (m) {
+          const day = m[1];
+          const mon = m[2].toLowerCase();
+          const yy = m[3];
+          const monthOk = wantedMonths.size === 0 || wantedMonths.has(mon);
+          const yearOk = wantedYears.size === 0 || wantedYears.has(yy);
+          if (monthOk && yearOk) {
+            const key = `${yy}-${mon}-${day.padStart(2,'0')}`;
+            if (!daySeen.has(key)) {
+              daySeen.add(key);
+              perDayFirst.push(ch);
+              continue;
+            }
+          }
+        }
+        rest.push(ch);
+      }
+      // Preserve original order: per-day coverage first, then remaining
+      finalOrderedChunks = [...perDayFirst, ...rest];
+      console.log('[CHAT] Per-day coverage selected', perDayFirst.length, 'unique day chunks for month query.');
+    }
+
+    // Build enhanced context using final ordered chunks and enforce a global size cap
     const MAX_CONTEXT_CHARS = 16000; // global cap
     let running = '';
     let countIncluded = 0;
-    for (let i = 0; i < condensedChunks.length; i += 1) {
-      const chunk = condensedChunks[i];
+    for (let i = 0; i < finalOrderedChunks.length; i += 1) {
+      const chunk = finalOrderedChunks[i];
       const fileName = chunk.fileName || 'Unknown file';
       const score = chunk.score ? ` (relevance: ${chunk.score.toFixed(3)})` : '';
       const piece = `[CHUNK ${i + 1} - From: ${fileName}${score}]\n${chunk.condensed}\n\n`;
@@ -364,7 +517,7 @@ exports.chat = async (req, res) => {
       countIncluded += 1;
     }
     const context = running;
-    console.log('[CHAT] Condensed context uses', countIncluded, 'chunks, chars:', context.length);
+    console.log('[CHAT] Condensed context included', countIncluded, 'of', finalOrderedChunks.length, 'matched chunks. Total context chars:', context.length);
 
     // Add validation context
     let validationContext = `
@@ -432,6 +585,86 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       }
     }
 
+    // Deterministic precomputation: purchases for month/year queries
+    let purchaseSummary = '';
+    if (queryType === 'purchase' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      const entries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = extractPurchasesFromText(text, wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) entries.push(...found);
+      }
+      const total = entries.reduce((s, e) => s + (e.amount || 0), 0);
+      const sample = entries.slice(0, 25)
+        .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
+        .join('\n');
+      purchaseSummary = `\n\nPRECOMPUTED PURCHASE SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total purchases: ${total.toLocaleString()}\nSample entries:\n${sample}\n`;
+      console.log('[CHAT] Precomputed purchases (date-filtered scan):', { count: entries.length, total });
+    }
+
+    // Deterministic precomputation: sales (Sale) for date-specific queries
+    let salesSummary = '';
+    if (queryType === 'sales' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      let entries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = extractSalesFromText(text, wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) entries.push(...found);
+      }
+      // No strict day-range or account filtering to keep behavior generic
+      const total = entries.reduce((s, e) => s + (e.amount || 0), 0);
+      const sample = entries.slice(0, 25)
+        .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
+        .join('\n');
+      salesSummary = `\n\nPRECOMPUTED SALES (SALE) SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total sales amount: ${total.toLocaleString()}\nSample entries:\n${sample}\n`;
+      console.log('[CHAT] Precomputed sales (date-filtered scan):', { count: entries.length, total });
+    }
+
+    // Deterministic precomputation: journals (Jrnl) for date-specific queries
+    let journalSummary = '';
+    if (queryType === 'journal' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      const entries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = extractEntriesOfTypeFromText(text, 'Jrnl', wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) entries.push(...found);
+      }
+      const totalDebit = entries.filter(e => e.amount < 0).reduce((s, e) => s + e.amount, 0);
+      const totalCredit = entries.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
+      const sample = entries.slice(0, 25)
+        .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
+        .join('\n');
+      journalSummary = `\n\nPRECOMPUTED JOURNAL (JRNL) SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total debits: ${totalDebit.toLocaleString()}\n- Total credits: ${totalCredit.toLocaleString()}\nSample entries:\n${sample}\n`;
+      console.log('[CHAT] Precomputed journals (date-filtered scan):', { count: entries.length, totalDebit, totalCredit });
+    }
+
     // Estimate token usage to prevent overflow
     const contextLength = context.length;
     const validationLength = validationContext.length;
@@ -460,7 +693,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       }
       finalContext = tight;
       finalValidationContext = validationContext;
-      console.log('[CHAT] Tight condensation used chunks:', used, 'chars:', finalContext.length);
+      console.log('[CHAT] Tight condensation included', used, 'of', condensedChunks.length, 'matched chunks. Chars:', finalContext.length);
     } else {
       finalContext = context;
       finalValidationContext = validationContext;
@@ -471,9 +704,11 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     if (queryType === 'loan') {
       extraInstructions = '\nIMPORTANT: Only include transactions where the account or narration contains the word "Loan", "OD", "Bank Loan", "Secured Loan", or "Unsecured Loan". Ignore regular payments, receipts, and expenses. Deduplicate loans by account and counterparty. Do not double-count the same loan.';
     } else if (queryType === 'sales') {
-      extraInstructions = '\nIMPORTANT: Only consider entries where the account or narration contains "Sale" or "Sales". Ignore unrelated transactions.';
+      extraInstructions = '\nIMPORTANT: Include ONLY vouchers where Type is exactly "Sale". EXCLUDE any "Sales Order" and its variants (e.g., "Sales Or", "Sales Ord.") entirely. Be strict about the date filter (month/year/day as requested).';
     } else if (queryType === 'purchase') {
       extraInstructions = '\nIMPORTANT: Include ALL purchase-related entries (purchase, supplier, GRN, material, inventory, stock, goods received). Do not overlook any purchase transactions. Check for variations like "purc", "supplier", "material", "inventory", "stock", "goods received", "GRN".';
+    } else if (queryType === 'journal') {
+      extraInstructions = '\nIMPORTANT: Include ONLY journal (Jrnl) vouchers. Report both debit (negative) and credit (positive) amounts. If a specific date is requested (e.g., 1-May-24), list all Jrnl entries on that date. Do not include purchases, sales, receipts.';
     } else if (queryType === 'expense') {
       extraInstructions = '\nIMPORTANT: Only include entries with "Expense" or related terms in the account or narration. Ignore purchases, sales, and receipts.';
     } else if (queryType === 'receipt') {
@@ -494,13 +729,14 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary), (finalContext + finalValidationContext), dateContext);
+    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + journalSummary), (finalContext + finalValidationContext), dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');
     console.log('[CHAT] Date context:', dateContext);
     console.log('[CHAT] Bank context:', bankName);
     console.log('[CHAT] Calling OpenAI API...');
+    console.log('[CHAT] OpenAI model:', OPENAI_MODEL);
 
     // Prepare chat history as proper OpenAI messages (limit to last 8 turns to control tokens)
     const historyMessages = Array.isArray(chatHistory)
@@ -562,7 +798,7 @@ For date-specific queries like "sales vouchers in July 2025", ONLY count voucher
     const openaiRes = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-3.5-turbo',
+        model: OPENAI_MODEL,
         messages,
         max_tokens: 1500,
         temperature: 0.3
@@ -579,7 +815,21 @@ For date-specific queries like "sales vouchers in July 2025", ONLY count voucher
     console.log('[CHAT] OpenAI answer:', answer.substring(0, 300));
     res.json({ answer });
   } catch (err) {
-    console.error(err);
+    // Improved error visibility for Axios/OpenAI errors
+    if (err && err.response) {
+      console.error('[CHAT][OpenAI ERROR]', {
+        status: err.response.status,
+        statusText: err.response.statusText,
+        headers: err.response.headers,
+        data: err.response.data
+      });
+    } else if (err && err.request) {
+      console.error('[CHAT][OpenAI REQUEST ERROR] No response received', {
+        message: err.message
+      });
+    } else {
+      console.error('[CHAT][ERROR]', err);
+    }
     res.status(500).json({ error: 'Chat failed' });
   }
 };

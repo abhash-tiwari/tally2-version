@@ -114,6 +114,50 @@ const { getEmbedding } = require('../utils/embedding');
 const { chunkTallyData, getChunkingSummary } = require('../utils/dataChunker');
 const { authenticateToken } = require('../routes/auth');
 
+// Helper: extract a month key (YYYY-MM) from a line of text
+function extractMonthKeyFromLine(line) {
+  if (!line) return null;
+
+  // Try common date patterns that appear in Tally exports
+  // 1) dd-MMM-yy or dd-MMM-yyyy e.g., 11-Mar-25 or 11-Mar-2025
+  const m1 = line.match(/\b(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b/);
+  if (m1) {
+    const [_, d, monAbbrRaw, yRaw] = m1;
+    const monAbbr = monAbbrRaw.slice(0, 3).toLowerCase();
+    const months = {
+      jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+      jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
+    };
+    const m = months[monAbbr];
+    if (m) {
+      let y = parseInt(yRaw, 10);
+      if (yRaw.length === 2) {
+        // Pivot: 00-69 => 2000-2069, 70-99 => 1970-1999
+        y = y < 70 ? 2000 + y : 1900 + y;
+      }
+      return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}`;
+    }
+  }
+
+  // 2) yyyyMMdd e.g., 20250311 (Tally XML date)
+  const m2 = line.match(/\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b/);
+  if (m2) {
+    const y = m2[1];
+    const mo = m2[2];
+    return `${y}-${mo}`;
+  }
+
+  // 3) ISO yyyy-MM-dd
+  const m3 = line.match(/\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/);
+  if (m3) {
+    const y = m3[1];
+    const mo = m3[2];
+    return `${y}-${mo}`;
+  }
+
+  return null;
+}
+
 exports.uploadFile = async (req, res) => {
   try {
     const file = req.file;
@@ -123,23 +167,25 @@ exports.uploadFile = async (req, res) => {
     const parsedData = await parseFile(file);
     console.log('[UPLOAD] File parsed. Type:', typeof parsedData);
 
-    // Convert to one string regardless of input type
-    let singleChunk = '';
+    // Build a list of normalized lines we can group by month later
+    const lines = [];
 
     if (Array.isArray(parsedData)) {
       // Excel or ZIP
       parsedData.forEach(sheet => {
         if (typeof sheet === 'string') {
-          singleChunk += sheet + '\n';
+          // Split to lines to allow month grouping
+          String(sheet).split(/\r?\n/).forEach(l => { if (l && l.trim()) lines.push(l); });
         } else if (sheet.data) {
           sheet.data.forEach(row => {
-            singleChunk += row.join(' | ') + '\n';
+            const l = row.join(' | ');
+            if (l && l.trim()) lines.push(l);
           });
         }
       });
     } else if (typeof parsedData === 'string') {
-      // PDF text
-      singleChunk = parsedData;
+      // PDF text -> lines
+      String(parsedData).split(/\r?\n/).forEach(l => { if (l && l.trim()) lines.push(l); });
     } else if (typeof parsedData === 'object') {
       const envelope = parsedData.ENVELOPE;
 
@@ -149,11 +195,11 @@ exports.uploadFile = async (req, res) => {
         messages.forEach(msg => {
           if (msg.LEDGER) {
             const l = msg.LEDGER;
-            singleChunk += `Ledger: ${l.NAME} | Parent: ${l.PARENT} | OB: ${l.OPENINGBALANCE} | CB: ${l.CLOSINGBALANCE}\n`;
+            lines.push(`Ledger: ${l.NAME} | Parent: ${l.PARENT} | OB: ${l.OPENINGBALANCE} | CB: ${l.CLOSINGBALANCE}`);
           }
           if (msg.VOUCHER) {
             const v = msg.VOUCHER;
-            singleChunk += `Voucher: ${v.DATE} | Type: ${v.VOUCHERTYPENAME} | Narration: ${v.NARRATION} | Amount: ${v.AMOUNT}\n`;
+            lines.push(`Voucher: ${v.DATE} | Type: ${v.VOUCHERTYPENAME} | Narration: ${v.NARRATION} | Amount: ${v.AMOUNT}`);
           }
         });
       } else if (envelope?.DSPVCHDATE) {
@@ -165,59 +211,91 @@ exports.uploadFile = async (req, res) => {
         const narrations = envelope.DSPEXPLVCHNUMBER || [];
 
         for (let i = 0; i < dates.length; i++) {
-          singleChunk += `Voucher: ${dates[i] || '-'} | Type: ${types[i] || '-'} | Account: ${accounts[i] || '-'} | Dr: ${drAmts[i] || '-'} | Cr: ${crAmts[i] || '-'} | Narration: ${narrations[i] || '-'}\n`;
+          lines.push(`Voucher: ${dates[i] || '-'} | Type: ${types[i] || '-'} | Account: ${accounts[i] || '-'} | Dr: ${drAmts[i] || '-'} | Cr: ${crAmts[i] || '-'} | Narration: ${narrations[i] || '-'}`);
         }
       }
     }
 
-    if (!singleChunk.trim()) {
+    if (!lines.length) {
       console.log('[UPLOAD] No data extracted for embedding.');
       return res.status(400).json({ error: 'No content extracted from file' });
     }
 
-    // Chunk the data to fit OpenAI API limits with overlapping for better context continuity
-    const dataChunks = chunkTallyData(
-      singleChunk, 
-      4000,  // Max tokens per chunk (reduced from 8000)
-      3000,  // Max words per chunk (reduced from 6000)
-      200,   // Overlap tokens between chunks (reduced from 500)
-      150    // Overlap words between chunks (reduced from 400)
-    );
-    const chunkingSummary = getChunkingSummary(dataChunks, true); // true = has overlap
-    
-    console.log('[UPLOAD] Chunking summary:', chunkingSummary);
-    console.log('[UPLOAD] Created', dataChunks.length, 'overlapping chunks from file:', file.originalname);
-    
-    if (chunkingSummary.overlapAnalysis) {
-      console.log('[UPLOAD] Overlap analysis:', {
-        totalOverlaps: chunkingSummary.overlapAnalysis.totalOverlaps,
-        avgOverlapTokens: chunkingSummary.overlapAnalysis.averageOverlapTokens,
-        avgOverlapWords: chunkingSummary.overlapAnalysis.averageOverlapWords
+    // Group lines by monthKey
+    const groups = new Map(); // monthKey => string[]
+    let lastMonthKey = null;
+    for (const l of lines) {
+      const detected = extractMonthKeyFromLine(l);
+      if (detected) lastMonthKey = detected;
+      const mk = detected || lastMonthKey || 'unknown';
+      if (!groups.has(mk)) groups.set(mk, []);
+      groups.get(mk).push(l);
+    }
+
+    // If only one actual month was detected, merge any 'unknown' lines into it
+    const nonUnknownMonths = Array.from(groups.keys()).filter(k => k !== 'unknown');
+    if (groups.has('unknown') && nonUnknownMonths.length === 1) {
+      const sole = nonUnknownMonths[0];
+      const unknownLines = groups.get('unknown') || [];
+      const merged = groups.get(sole) || [];
+      groups.set(sole, merged.concat(unknownLines));
+      groups.delete('unknown');
+      console.log('[UPLOAD] Merged date-less lines into month:', sole, 'Count:', unknownLines.length);
+    }
+
+    // For each month group, create chunks within that month
+    const allMonthChunks = [];
+    for (const [mk, arr] of groups.entries()) {
+      const monthText = arr.join('\n');
+      // If the month's content is small, keep it as a single chunk to avoid unnecessary splits
+      const SMALL_MONTH_CHAR_LIMIT = 12000; // ~3k tokens rough
+      let monthChunks;
+      if (monthText.length <= SMALL_MONTH_CHAR_LIMIT) {
+        monthChunks = [monthText];
+      } else {
+        monthChunks = chunkTallyData(
+          monthText,
+          4000, // tokens
+          3000, // words
+          200,  // overlap tokens
+          150   // overlap words
+        );
+      }
+      // Attach monthKey to each content chunk
+      monthChunks.forEach(c => {
+        allMonthChunks.push({ content: c, monthKey: mk === 'unknown' ? undefined : mk });
       });
     }
 
-    // Generate embeddings for each chunk
+    // Build chunking summary similar to previous, but aggregated
+    const chunkingSummary = getChunkingSummary(allMonthChunks.map(c => c.content), true);
+    console.log('[UPLOAD] Created', allMonthChunks.length, 'chunks across', groups.size, 'month groups from file:', file.originalname);
+
+    // Generate embeddings for each month-based chunk
     const chunksWithEmbeddings = [];
-    for (let i = 0; i < dataChunks.length; i++) {
-      const chunk = dataChunks[i];
-      console.log(`[UPLOAD] Generating embedding for chunk ${i + 1}/${dataChunks.length}`);
+    const totalChunks = allMonthChunks.length;
+    for (let i = 0; i < allMonthChunks.length; i++) {
+      const { content, monthKey } = allMonthChunks[i];
+      console.log(`[UPLOAD] Generating embedding for chunk ${i + 1}/${totalChunks}${monthKey ? ' [' + monthKey + ']' : ''}`);
       
       try {
-        const embedding = await getEmbedding(chunk);
+        const embedding = await getEmbedding(content);
         chunksWithEmbeddings.push({
-          content: chunk,
+          content,
           embedding,
           chunkIndex: i + 1,
-          totalChunks: dataChunks.length
+          totalChunks: totalChunks,
+          monthKey
         });
       } catch (embeddingError) {
         console.error(`[UPLOAD] Failed to generate embedding for chunk ${i + 1}:`, embeddingError);
         // Continue with other chunks even if one fails
         chunksWithEmbeddings.push({
-          content: chunk,
+          content,
           embedding: [], // Empty embedding as fallback
           chunkIndex: i + 1,
-          totalChunks: dataChunks.length,
+          totalChunks: totalChunks,
+          monthKey,
           embeddingError: true
         });
       }
@@ -239,7 +317,7 @@ exports.uploadFile = async (req, res) => {
 
     await tallyData.save();
     console.log('[UPLOAD] Data saved to MongoDB. User ID:', userId, 'Session ID:', sessionId);
-    console.log('[UPLOAD] File:', file.originalname, 'processed into', chunksWithEmbeddings.length, 'chunks');
+    console.log('[UPLOAD] File:', file.originalname, 'processed into', chunksWithEmbeddings.length, 'month-based chunks');
     console.log('[UPLOAD] Total tokens:', chunkingSummary.totalTokens, 'Total words:', chunkingSummary.totalWords);
 
     // Return success with detailed info including overlap statistics

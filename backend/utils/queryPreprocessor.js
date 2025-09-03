@@ -72,7 +72,9 @@ function extractDateContext(query) {
     years: [],
     dateTerms: [],
     specificDateRange: null,
-    isDateSpecific: false
+    isDateSpecific: false,
+    rangeStart: null,
+    rangeEnd: null
   };
   
   const lowerQuery = query.toLowerCase();
@@ -88,7 +90,7 @@ function extractDateContext(query) {
     }
   });
   
-  // Check for years
+  // Check for years (allow 2-digit as before for generic coverage)
   const yearMatches = lowerQuery.match(/\b(20\d{2}|19\d{2}|\d{2})\b/g);
   if (yearMatches) {
     context.hasDateQuery = true;
@@ -120,8 +122,89 @@ function extractDateContext(query) {
       context.hasDateQuery = true;
     }
   });
-  
+
+  // NEW: detect explicit DD-MMM-YY or DD-MM-YY single date
+  const singleDateRegex = /\b(\d{1,2})[-\/](\d{1,2}|[A-Za-z]{3,})[-\/](\d{2,4})\b/;
+  const singleMatch = lowerQuery.match(singleDateRegex);
+  if (singleMatch) {
+    context.hasDateQuery = true;
+    context.isDateSpecific = true;
+    // Normalize month token
+    const d = singleMatch[1];
+    const mRaw = singleMatch[2];
+    const yRaw = singleMatch[3];
+    const monAbbr = normalizeToMonthAbbrev(mRaw);
+    if (monAbbr) context.months.push(monAbbr);
+    const yy = normalizeToYY(yRaw);
+    if (yy) context.years.push(yy.length === 2 ? '20' + yy : yy);
+    context.dateTerms.push(singleMatch[0]);
+  }
+
+  // NEW: detect explicit ranges: "from A to B" or "between A and B"
+  const rangePatterns = [
+    /\bfrom\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+to\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i,
+    /\bbetween\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+and\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i
+  ];
+  for (const rp of rangePatterns) {
+    const m = query.match(rp);
+    if (m) {
+      const startStr = m[1];
+      const endStr = m[3];
+      const start = parseDateddMonYY(startStr);
+      const end = parseDateddMonYY(endStr);
+      if (start && end) {
+        context.hasDateQuery = true;
+        context.isDateSpecific = true;
+        context.specificDateRange = `${startStr} to ${endStr}`;
+        context.rangeStart = start;
+        context.rangeEnd = end;
+        // Populate months/years for downstream filters without overriding existing tokens
+        const monthsSet = new Set([start.mon, end.mon]);
+        const yearsSet = new Set([start.yy, end.yy]);
+        context.months.push(...Array.from(monthsSet).map(x => capitalize3(x)));
+        context.years.push(...Array.from(yearsSet).map(y => (y.length === 2 ? '20' + y : y)));
+        break;
+      }
+    }
+  }
+
   return context;
+}
+
+// Helpers
+function normalizeToMonthAbbrev(m) {
+  const s = String(m).toLowerCase();
+  if (/^\d{1,2}$/.test(s)) {
+    const idx = parseInt(s, 10) - 1;
+    const abbr = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][idx];
+    return abbr ? capitalize3(abbr) : null;
+  }
+  if (monthMappings[s]) return monthMappings[s];
+  const abbr = s.slice(0,3);
+  const valid = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  return valid.includes(abbr) ? capitalize3(abbr) : null;
+}
+
+function normalizeToYY(y) {
+  const s = String(y);
+  if (/^\d{2}$/.test(s)) return s;
+  if (/^\d{4}$/.test(s)) return s.slice(-2);
+  return null;
+}
+
+function parseDateddMonYY(str) {
+  // Accept: DD-MMM-YY, DD-MM-YY, with / as separator as well, year 2 or 4 digits
+  const m = String(str).match(/^(\d{1,2})[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]((?:\d{2})|(?:\d{4}))$/);
+  if (!m) return null;
+  const dd = parseInt(m[1], 10);
+  const monAbbr = normalizeToMonthAbbrev(m[2]);
+  const yy = normalizeToYY(m[3]);
+  if (!monAbbr || !yy) return null;
+  return { d: dd, mon: monAbbr.toLowerCase(), yy };
+}
+
+function capitalize3(s) {
+  return s.slice(0,1).toUpperCase() + s.slice(1,3);
 }
 
 /**

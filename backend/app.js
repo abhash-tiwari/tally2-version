@@ -34,8 +34,19 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // MongoDB connection
-mongoose.connect(process.env.MONGO_URI).then(() => {
+mongoose.connect(process.env.MONGO_URI).then(async () => {
   console.log('MongoDB connected');
+  try {
+    const conn = mongoose.connection;
+    console.log('[DB] Name:', conn.name);
+    console.log('[DB] Host:', conn.host);
+    console.log('[DB] Port:', conn.port);
+    // List known collections for quick sanity check
+    const cols = await conn.db.listCollections().toArray();
+    console.log('[DB] Collections:', cols.map(c => c.name).join(', '));
+  } catch (e) {
+    console.log('[DB] Failed to inspect connection:', e?.message);
+  }
   console.log('[AUTH] Google OAuth configured');
 }).catch(err => {
   console.error('MongoDB connection error:', err);

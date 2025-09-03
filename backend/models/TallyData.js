@@ -12,6 +12,7 @@ const TallyDataSchema = new mongoose.Schema({
       embedding: [Number],
       chunkIndex: Number,
       totalChunks: Number,
+      monthKey: { type: String, required: false }, // e.g., "2025-03" identifying the month this chunk represents
       embeddingError: { type: Boolean, default: false }
     }
   ],
@@ -20,5 +21,7 @@ const TallyDataSchema = new mongoose.Schema({
 
 // Index for efficient user-based queries
 TallyDataSchema.index({ userId: 1, createdAt: -1 });
+// Index to efficiently filter by month within embedded dataChunks
+TallyDataSchema.index({ userId: 1, 'dataChunks.monthKey': 1, createdAt: -1 });
 
 module.exports = mongoose.model('TallyData', TallyDataSchema);
