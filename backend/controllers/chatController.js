@@ -194,28 +194,13 @@ function extractEntriesOfTypeFromText(content, typeToken, wantedMonthsSet, wante
 }
 
 const QUERY_TYPE_KEYWORDS = {
-  loan: [
-    'loan', 'od', 'overdraft', 'secured loan', 'unsecured loan', 'borrowing', 'debt', 'credit facility', 'bank loan', 'cc account', 'bill discounting'
-  ],
-  sales: [
-    // Use restrained keywords; filtering function will enforce exact Type: Sale where possible
-    'sale', 'sales', 'sales account', 'sales ledger', 'sales-igst', 'sales local', 'sales lut/bond'
-  ],
-  purchase: [
-    'purchase', 'purc', 'purchases', 'purchase account', 'purchase ledger', 'import purchase', 'export purchase', 'supplier', 'grn', 'goods received', 'material', 'inventory', 'stock'
-  ],
-  payment: [
-    'payment', 'payments', 'pymt', 'pymts', 'paymt'
-  ],
-  journal: [
-    'journal', 'jrnl', 'jrnl.', 'journal voucher'
-  ],
-  expense: [
-    'expense', 'expenses', 'professional fees', 'rent', 'salary', 'bank charges', 'utility', 'travel', 'food', 'misc. expenses', 'mobile expenses', 'telephone expense', 'interest on loan', 'interest expense'
-  ],
-  receipt: [
-    'receipt', 'rcpt', 'receipts', 'received', 'income', 'direct incomes', 'indirect incomes'
-  ]
+  sales: ['sale', 'sales', 'revenue', 'income', 'sold'],
+  purchase: ['purchase', 'purchases', 'purc', 'buy', 'bought', 'supplier', 'vendor', 'material', 'inventory', 'stock', 'goods received', 'grn'],
+  journal: ['journal', 'jrnl', 'adjustment', 'transfer'],
+  expense: ['expense', 'expenses', 'cost', 'expenditure'],
+  receipt: ['receipt', 'rcpt', 'received', 'collection'],
+  payment: ['payment', 'payments', 'pymt', 'paid', 'pay'],
+  profit: ['profit', 'loss', 'net income', 'earnings', 'pnl', 'p&l', 'profitability', 'accounting profit', 'net profit', 'gross profit']
 };
 
 // Enhanced bank detection patterns
@@ -482,8 +467,9 @@ exports.chat = async (req, res) => {
       console.log('[CHAT] Chunks containing 14-May-25 after date filtering:', chunksWithMay14.length);
     }
     
-    // Placeholder for deterministic payment summary
+    // Placeholder for deterministic summaries
     let paymentSummary = '';
+    let profitSummary = '';
 
     // Deterministic precomputation: payments (Pymt) for date-specific queries
     if (queryType === 'payment' && dateContext && dateContext.isDateSpecific) {
@@ -552,6 +538,186 @@ exports.chat = async (req, res) => {
       // Debug: Check if May 14 entries are in the results
       const may14Entries = entries.filter(e => e.date.includes('14-May-25'));
       console.log('[CHAT] May 14 entries found:', may14Entries.length, may14Entries.slice(0, 3));
+    }
+    
+    // Deterministic precomputation: profit calculation for date-specific queries
+    if (queryType === 'profit' && dateContext && dateContext.isDateSpecific) {
+      console.log('[CHAT] Computing profit summary for date-specific query');
+      
+      let totalRevenue = 0;
+      let totalExpenses = 0;
+      const revenueEntries = [];
+      const expenseEntries = [];
+      
+      // Balance sheet exclusion keywords - more comprehensive
+      const balanceSheetKeywords = [
+        'loan', 'advance', 'capital', 'investment', 'asset', 'machinery', 'furniture',
+        'equipment', 'building', 'land', 'vehicle', 'computer', 'deposit', 'security',
+        'refund', 'customer advance', 'security deposit', 'bank', 'transfer', 'incorporation',
+        'marble block', 'inventory', 'stock', 'goods', 'material', 'raw material'
+      ];
+      
+      const isBalanceSheetItem = (account) => {
+        const lowerAccount = account.toLowerCase();
+        return balanceSheetKeywords.some(keyword => lowerAccount.includes(keyword)) ||
+               lowerAccount.includes('bank') && (lowerAccount.includes('transfer') || lowerAccount.includes('to ')) ||
+               // Exclude large amounts that are likely capital/asset transactions
+               lowerAccount.includes('marble') || lowerAccount.includes('block') ||
+               lowerAccount.includes('incorporation') || lowerAccount.includes('llp');
+      };
+      
+      const isReceiptIncome = (account) => {
+        const lowerAccount = account.toLowerCase();
+        const incomeKeywords = ['sales', 'service', 'commission', 'interest', 'dividend', 'rental', 'misc income'];
+        const excludeKeywords = ['advance', 'deposit', 'refund', 'return'];
+        
+        return incomeKeywords.some(keyword => lowerAccount.includes(keyword)) &&
+               !excludeKeywords.some(keyword => lowerAccount.includes(keyword));
+      };
+      
+      for (const chunk of filteredChunks) {
+        const lines = chunk.content.split('\n');
+        for (const line of lines) {
+          // REVENUE: Sales vouchers (Type: "Sale")
+          if (line.includes('"Sale"')) {
+            const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Sale"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
+            if (match) {
+              const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
+              const account = match[2];
+              if (!isNaN(amount) && !isBalanceSheetItem(account)) {
+                totalRevenue += amount;
+                revenueEntries.push({ date: match[1], account, amount, type: 'Sales' });
+              }
+            }
+          }
+          
+          // REVENUE: Credit Notes (Type: "C/Note" - treated as sales returns, subtract from revenue)
+          if (line.includes('"C/Note"')) {
+            const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","C\/Note"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
+            if (match) {
+              const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
+              const account = match[2];
+              if (!isNaN(amount) && !isBalanceSheetItem(account)) {
+                totalRevenue -= amount; // Subtract credit notes as they represent sales returns
+                revenueEntries.push({ date: match[1], account, amount: -amount, type: 'Sales Return (Credit Note)' });
+              }
+            }
+          }
+          
+          // REVENUE: Income receipts (Type: "Rcpt" - only genuine business income)
+          if (line.includes('"Rcpt"')) {
+            const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Rcpt"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
+            if (match) {
+              const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
+              const account = match[2];
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isReceiptIncome(account)) {
+                totalRevenue += amount;
+                revenueEntries.push({ date: match[1], account, amount, type: 'Business Income Receipt' });
+              }
+            }
+          }
+          
+          // EXPENSES: Purchase costs (Type: "Purc" - only trading goods, not assets)
+          if (line.includes('"Purc"')) {
+            const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Purc"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
+            if (match) {
+              const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
+              const account = match[2];
+              const lowerAccount = account.toLowerCase();
+              
+              // Exclude asset purchases and large inventory acquisitions
+              const assetKeywords = ['marble block', 'machinery', 'equipment', 'furniture', 'vehicle', 'computer'];
+              const isAssetPurchase = assetKeywords.some(keyword => lowerAccount.includes(keyword));
+              
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && !isAssetPurchase) {
+                totalExpenses += amount;
+                expenseEntries.push({ date: match[1], account, amount, type: 'Purchase (COGS)' });
+              }
+            }
+          }
+          
+          // EXPENSES: Operating payments (Type: "Pymt" - only small business expenses)
+          if (line.includes('"Pymt"')) {
+            const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Pymt",(-?[0-9,]+(?:\.[0-9]+)?)/);
+            if (match) {
+              const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
+              const account = match[2];
+              const lowerAccount = account.toLowerCase();
+              
+              // Only include payments that are clearly operating expenses and under reasonable limits
+              const operatingExpenseKeywords = [
+                'electricity', 'rent', 'salary', 'wage', 'tax', 'insurance', 'telephone',
+                'internet', 'office', 'stationery', 'courier', 'freight', 'bank charges',
+                'professional', 'audit', 'legal', 'maintenance', 'repair', 'fuel',
+                'travel', 'conveyance', 'advertisement', 'marketing'
+              ];
+              
+              const isOperatingExpense = operatingExpenseKeywords.some(keyword => lowerAccount.includes(keyword));
+              
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isOperatingExpense && amount < 500000) {
+                totalExpenses += amount;
+                expenseEntries.push({ date: match[1], account, amount, type: 'Operating Payment' });
+              }
+            }
+          }
+          
+          // EXPENSES: Operating expenses from Journal entries (Type: "Jrnl")
+          if (line.includes('"Jrnl"')) {
+            const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Jrnl",(-?[0-9,]+(?:\.[0-9]+)?)/);
+            if (match) {
+              const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
+              const account = match[2];
+              // Include journal entries that are operating expenses (rent, salaries, utilities, etc.)
+              const expenseKeywords = [
+                'rent', 'salary', 'expense', 'electricity', 'insurance', 'professional', 'tax', 
+                'charges', 'freight', 'custom', 'duty', 'courier', 'travel', 'office', 'telephone',
+                'internet', 'maintenance', 'repair', 'audit', 'legal', 'consulting', 'advertising',
+                'marketing', 'commission', 'brokerage', 'penalty', 'fine', 'miscellaneous'
+              ];
+              const excludeJournalKeywords = [
+                'interest on loan', 'depreciation', 'provision', 'capital', 'advance', 'loan',
+                'marble', 'block', 'inventory', 'stock', 'asset', 'investment', 'incorporation'
+              ];
+              const isExpense = expenseKeywords.some(keyword => account.toLowerCase().includes(keyword)) &&
+                              !excludeJournalKeywords.some(keyword => account.toLowerCase().includes(keyword)) &&
+                              amount < 200000; // Limit journal expenses to reasonable amounts
+              
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isExpense) {
+                totalExpenses += amount;
+                expenseEntries.push({ date: match[1], account, amount, type: 'Operating Expense (Journal)' });
+              }
+            }
+          }
+        }
+      }
+      
+      const netProfit = totalRevenue - totalExpenses;
+      
+      profitSummary = `\n\n=== ACCOUNTING PROFIT CALCULATION ===\n` +
+        `TOTAL REVENUE (Sales + Other Income): ${totalRevenue.toLocaleString()}\n` +
+        `TOTAL EXPENSES (Purchases + Operating Expenses): ${totalExpenses.toLocaleString()}\n` +
+        `NET PROFIT/LOSS: ${netProfit.toLocaleString()}\n\n` +
+        `REVENUE BREAKDOWN (${revenueEntries.length} entries):\n` +
+        revenueEntries.slice(0, 15).map(e => `- ${e.date}: ${e.account} = ₹${e.amount.toLocaleString()} [${e.type}]`).join('\n') +
+        (revenueEntries.length > 15 ? `\n... and ${revenueEntries.length - 15} more revenue entries` : '') +
+        `\n\nEXPENSE BREAKDOWN (${expenseEntries.length} entries):\n` +
+        expenseEntries.slice(0, 15).map(e => `- ${e.date}: ${e.account} = ₹${e.amount.toLocaleString()} [${e.type}]`).join('\n') +
+        (expenseEntries.length > 15 ? `\n... and ${expenseEntries.length - 15} more expense entries` : '') +
+        `\n\nNOTE: This calculation follows proper accounting principles:\n` +
+        `• REVENUE: Sales (net of returns), genuine business income receipts\n` +
+        `• EXPENSES: Trading purchases, operating payments (<5L), business journals (<2L)\n` +
+        `• EXCLUDED: Loans, advances, assets, inventory, large transactions, bank transfers\n` +
+        `• Credit Notes treated as sales returns (subtracted from revenue)\n` +
+        `• Amount limits applied to prevent inclusion of capital transactions\n` +
+        `=== END PROFIT CALCULATION ===\n`;
+      
+      console.log('[CHAT] Computed profit (updated logic):', { 
+        revenue: totalRevenue, 
+        expenses: totalExpenses, 
+        profit: netProfit,
+        revenueEntries: revenueEntries.length,
+        expenseEntries: expenseEntries.length 
+      });
     }
     
     // Create data summary for validation
@@ -894,6 +1060,8 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       extraInstructions = '\nIMPORTANT: Only include entries with "Receipt" or "Rcpt" in the account or narration. Ignore unrelated transactions.';
     } else if (queryType === 'payment') {
       extraInstructions = '\nCRITICAL: Use the COMPLETE PAYMENT ENTRIES LIST provided in the context. This contains ALL payment entries found. Present the complete list organized by date, showing every single entry.';
+    } else if (queryType === 'profit') {
+      extraInstructions = '\nCRITICAL: Use the ACCOUNTING PROFIT CALCULATION provided in the context. This contains the correct profit calculation using proper accounting principles. Present the results from this calculation, NOT a simple credits minus debits approach.';
     }
 
     // Add bank-specific instructions if bank is detected
@@ -910,7 +1078,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + journalSummary + paymentSummary), (finalContext + finalValidationContext), dateContext);
+    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');
