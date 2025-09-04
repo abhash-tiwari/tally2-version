@@ -542,7 +542,100 @@ exports.chat = async (req, res) => {
     
     // Deterministic precomputation: profit calculation for date-specific queries
     if (queryType === 'profit' && dateContext && dateContext.isDateSpecific) {
-      console.log('[CHAT] Computing profit summary for date-specific query');
+      console.log('[CHAT] Starting smart profit detection using actual P&L journal entries');
+      
+      // SMART PROFIT DETECTION: Look for actual Tally P&L journal entries first
+      const profitEntries = [];
+      
+      // Check for Financial Year queries (look for March 31st entries)
+      const isFYQuery = /\b(?:fy|financial\s+year)\s*(\d{4})[-\/\s](\d{2,4})\b/gi.test(question) || 
+                       /\bprofit\s+from.*to.*\b/gi.test(question);
+      
+      // Check for Quarterly queries (look for October entries)
+      const isQuarterlyQuery = /\b(?:quarter|quarterly|q[1-4])\b/gi.test(question);
+      
+      if (isFYQuery || isQuarterlyQuery) {
+        console.log('[CHAT] Detected FY/Quarterly profit query, searching for P&L journal entries');
+        
+        for (const chunk of dateFilteredChunks) {
+          const lines = chunk.content.split('\n');
+          
+          for (let i = 0; i < lines.length - 1; i++) {
+            const line1 = lines[i];
+            const line2 = lines[i + 1];
+            
+            // Pattern for FY profit entries (March 31st)
+            if (isFYQuery && line1.includes('31-Mar-') && line1.includes('"Profit & Loss A/c"') && line1.includes('"Jrnl"')) {
+              const match1 = line1.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Jrnl",(-?[0-9,]+(?:\.[0-9]+)?)/);
+              const match2 = line2.match(/^"","([^"]*)","[^"]*","[^"]*",,([0-9,]+(?:\.[0-9]+)?)/);
+              
+              if (match1 && match2 && match2[1].includes('Profit Retained')) {
+                const profitAmount = Math.abs(parseFloat(match2[2].replace(/,/g, '')));
+                const date = match1[1];
+                const year = '20' + date.split('-')[2];
+                
+                profitEntries.push({
+                  date,
+                  amount: profitAmount,
+                  type: 'Annual Profit (FY)',
+                  year,
+                  source: 'P&L Journal Entry'
+                });
+                
+                console.log('[CHAT] Found FY profit entry:', { date, amount: profitAmount, year });
+              }
+            }
+            
+            // Pattern for Quarterly profit entries (October)
+            if (isQuarterlyQuery && line1.includes('-Oct-') && line1.includes('"Jrnl"')) {
+              const match1 = line1.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Jrnl",(-?[0-9,]+(?:\.[0-9]+)?)/);
+              const match2 = line2.match(/^"","([^"]*)","[^"]*","[^"]*",,([0-9,]+(?:\.[0-9]+)?)/);
+              
+              if (match1 && match2 && match2[1].includes('Profit & Loss A/c')) {
+                const profitAmount = Math.abs(parseFloat(match2[2].replace(/,/g, '')));
+                const date = match1[1];
+                const quarter = 'Q2'; // October is typically Q2
+                
+                profitEntries.push({
+                  date,
+                  amount: profitAmount,
+                  type: `Quarterly Profit (${quarter})`,
+                  quarter,
+                  source: 'P&L Journal Entry'
+                });
+                
+                console.log('[CHAT] Found quarterly profit entry:', { date, amount: profitAmount, quarter });
+              }
+            }
+          }
+        }
+        
+        // If we found P&L journal entries, return them directly
+        if (profitEntries.length > 0) {
+          const totalProfit = profitEntries.reduce((sum, entry) => sum + entry.amount, 0);
+          
+          profitSummary = `\n\n=== TALLY P&L JOURNAL ENTRIES (OFFICIAL PROFIT FIGURES) ===\n` +
+            `TOTAL PROFIT: ₹${totalProfit.toLocaleString()}\n\n` +
+            `PROFIT ENTRIES FOUND (${profitEntries.length} entries):\n` +
+            profitEntries.map(e => `- ${e.date}: ₹${e.amount.toLocaleString()} [${e.type}] - ${e.source}`).join('\n') +
+            `\n\nNOTE: These are official Tally P&L journal entries:\n` +
+            `• FY Entries: Found on March 31st with "Profit & Loss A/c" → "Profit Retained"\n` +
+            `• Quarterly Entries: Found in October with P&L account transfers\n` +
+            `• These represent Tally's calculated profit figures\n` +
+            `• Matches CA/Auditor methodology for profit reporting\n` +
+            `=== END OFFICIAL P&L ENTRIES ===\n`;
+          
+          console.log('[CHAT] Returning official P&L journal entries:', { 
+            totalProfit, 
+            entriesFound: profitEntries.length 
+          });
+          
+          return res.json({ answer: profitSummary });
+        }
+      }
+      
+      // FALLBACK: Traditional calculation if no P&L journal entries found
+      console.log('[CHAT] No P&L journal entries found, falling back to traditional calculation');
       
       let totalRevenue = 0;
       let totalExpenses = 0;
