@@ -16,8 +16,8 @@ console.log(`Using OpenAI model: ${OPENAI_MODEL}`);
 function extractPurchasesFromText(content, wantedMonthsSet, wantedYearsSet) {
   const results = [];
   if (!content || typeof content !== 'string') return results;
-  // Pattern example: 30-Oct-23,"Shreenath Shipping Agency","","Purc",,264678.00,
-  const lineRegex = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Purc",,(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|-?[0-9]+(?:\.[0-9]+)?)\b.*$/m;
+  // Pattern example: 30-Oct-23,"Shreenath Shipping Agency","","Purc",,-2,64,678.00,
+  const lineRegex = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Purc",,(-?[0-9,.-]+)\b.*$/m;
   const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
   const lines = content.split(/\r?\n/);
   for (const line of lines) {
@@ -34,7 +34,11 @@ function extractPurchasesFromText(content, wantedMonthsSet, wantedYearsSet) {
     if (m) {
       const date = m[1];
       const account = m[2] || '';
-      const amtRaw = m[3].replace(/,/g, '');
+      let amtRaw = m[3];
+      
+      // Handle Indian number formatting: remove commas and dashes used as separators
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      
       const amount = Number(amtRaw);
       if (!Number.isNaN(amount)) {
         results.push({ date, account, amount });
@@ -127,10 +131,10 @@ function extractSalesFromText(content, wantedMonthsSet, wantedYearsSet) {
   const results = [];
   if (!content || typeof content !== 'string') return results;
   // Handle both common layouts after Type field:
-  // A) 18-Oct-24,"Account","","Sale",-123.45,,
-  // B) 18-Oct-24,"Account","","Sale",,123.45,
-  const lineRegexA = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|-?[0-9]+(?:\.[0-9]+)?)\b.*$/m;
-  const lineRegexB = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",,(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|-?[0-9]+(?:\.[0-9]+)?)\b.*$/m;
+  // A) 18-Oct-24,"Account","","Sale",-47,39,65,,  (Indian format with dashes)
+  // B) 18-Oct-24,"Account","","Sale",,-47,39,65,  (Indian format with dashes)
+  const lineRegexA = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",(-?[0-9,.-]+)\b.*$/m;
+  const lineRegexB = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",,(-?[0-9,.-]+)\b.*$/m;
   const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
   const lines = content.split(/\r?\n/);
   for (const line of lines) {
@@ -147,9 +151,51 @@ function extractSalesFromText(content, wantedMonthsSet, wantedYearsSet) {
     if (m) {
       const date = m[1];
       const account = m[2] || '';
-      const amtRaw = m[3].replace(/,/g, '');
+      let amtRaw = m[3];
+      
+      // Handle Indian number formatting: -47,39,65 should become 473965
+      // Remove all commas and dashes (formatting characters)
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      
       const amount = Number(amtRaw);
-      if (!Number.isNaN(amount)) {
+      if (!Number.isNaN(amount) && amount > 0) { // Only positive amounts for sales
+        results.push({ date, account, amount });
+      }
+    }
+  }
+  return results;
+}
+
+// Helper: extract credit note entries (Type: C/Note) from CSV-like content for a specific month/year
+function extractCreditNotesFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  // Pattern example: 1-May-22,"ACE Travels India","","C/Note",,19660.00,
+  const lineRegexA = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","C\/Note",(-?[0-9,.-]+)\b.*$/m;
+  const lineRegexB = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","C\/Note",,(-?[0-9,.-]+)\b.*$/m;
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.includes('"C/Note"')) continue;
+    const dm = dateRegex.exec(line);
+    if (!dm) continue;
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    let m = lineRegexA.exec(line);
+    if (!m) m = lineRegexB.exec(line);
+    if (m) {
+      const date = m[1];
+      const account = m[2] || '';
+      let amtRaw = m[3];
+      
+      // Handle Indian number formatting: remove commas and dashes used as separators
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      
+      const amount = Number(amtRaw);
+      if (!Number.isNaN(amount) && amount > 0) { // Only positive amounts for credit notes
         results.push({ date, account, amount });
       }
     }
@@ -161,10 +207,10 @@ function extractSalesFromText(content, wantedMonthsSet, wantedYearsSet) {
 function extractEntriesOfTypeFromText(content, typeToken, wantedMonthsSet, wantedYearsSet) {
   const results = [];
   if (!content || typeof content !== 'string') return results;
-  // Example: 1-May-24,"Rent- Kanakia Office","","Jrnl",-132300.00,, ...
+  // Example: 1-May-24,"Rent- Kanakia Office","","Jrnl",-1,32,300.00,, ...
   const typeQuoted = typeToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const lineRegex = new RegExp(
-    `^(\\d{1,2}-[A-Za-z]{3}-\\d{2}),"([^"]*)","","${typeQuoted}",(-?[0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]+)?|-?[0-9]+(?:\\.[0-9]+)?)\\b.*$`,
+    `^(\\d{1,2}-[A-Za-z]{3}-\\d{2}),"([^"]*)","","${typeQuoted}",(-?[0-9,.-]+)\\b.*$`,
     'm'
   );
   const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
@@ -183,7 +229,11 @@ function extractEntriesOfTypeFromText(content, typeToken, wantedMonthsSet, wante
     if (m) {
       const date = m[1];
       const account = m[2] || '';
-      const amtRaw = m[3].replace(/,/g, '');
+      let amtRaw = m[3];
+      
+      // Handle Indian number formatting: remove commas and dashes used as separators
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      
       const amount = Number(amtRaw);
       if (!Number.isNaN(amount)) {
         results.push({ date, account, amount });
@@ -200,6 +250,7 @@ const QUERY_TYPE_KEYWORDS = {
   expense: ['expense', 'expenses', 'cost', 'expenditure'],
   receipt: ['receipt', 'rcpt', 'received', 'collection'],
   payment: ['payment', 'payments', 'pymt', 'paid', 'pay'],
+  credit_note: ['credit note', 'credit notes', 'c/note', 'cnote', 'sales return', 'return'],
   profit: ['profit', 'loss', 'net income', 'earnings', 'pnl', 'p&l', 'profitability', 'accounting profit', 'net profit', 'gross profit']
 };
 
@@ -1108,6 +1159,85 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Precomputed purchases (date-filtered scan):', { count: entries.length, total });
     }
 
+    // Deterministic precomputation: credit notes (C/Note) for date-specific queries
+    let creditNoteSummary = '';
+    if (queryType === 'credit_note' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      let entries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = extractCreditNotesFromText(text, wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) {
+          console.log('[CHAT] Found', found.length, 'credit note entries in chunk from', ch.fileName);
+          console.log('[CHAT] Sample entries:', found.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
+          entries.push(...found);
+        }
+      }
+      
+      // Debug: Check for duplicates and negative amounts
+      console.log('[CHAT] Total credit note entries before filtering:', entries.length);
+      const positiveEntries = entries.filter(e => e.amount > 0);
+      const negativeEntries = entries.filter(e => e.amount < 0);
+      const zeroEntries = entries.filter(e => e.amount === 0);
+      console.log('[CHAT] Positive amounts:', positiveEntries.length, 'Negative amounts:', negativeEntries.length, 'Zero amounts:', zeroEntries.length);
+      
+      if (negativeEntries.length > 0) {
+        console.log('[CHAT] Sample negative entries:', negativeEntries.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
+      }
+      
+      // Remove duplicates based on date + account + amount
+      const uniquePositiveEntries = [];
+      const seen = new Set();
+      for (const entry of positiveEntries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniquePositiveEntries.push(entry);
+        }
+      }
+      
+      console.log('[CHAT] After deduplication: ', uniquePositiveEntries.length, 'unique positive credit note entries');
+      
+      // Debug: List all entries to see what's being found
+      console.log('[CHAT] All credit note entries found:');
+      uniquePositiveEntries.forEach((entry, index) => {
+        console.log(`  ${index + 1}. ${entry.date}: ${entry.account} = ${entry.amount}`);
+      });
+      
+      entries = uniquePositiveEntries;
+
+      // Use original logic for extraction but Python for accurate total calculation
+      let finalTotal = entries.reduce((s, e) => s + (e.amount || 0), 0); // Fallback calculation
+      let pythonCalculationNote = '';
+      
+      try {
+        console.log('[CHAT] Using Python for accurate credit note total calculation from', entries.length, 'entries...');
+        const { calculateSalesTotals } = require('../utils/pythonCalculator');
+        const pythonResult = await calculateSalesTotals(entries, dateContext);
+        finalTotal = pythonResult.total_amount;
+        pythonCalculationNote = ' (Python-calculated)';
+        console.log('[CHAT] Python calculation successful:', { originalTotal: finalTotal, pythonTotal: pythonResult.total_amount });
+      } catch (error) {
+        console.log('[CHAT] Python calculation failed, using fallback:', error.message);
+        pythonCalculationNote = ' (Fallback calculation)';
+      }
+
+      // Create detailed summary for AI context
+      const sample = entries.slice(0, 25)
+        .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
+        .join('\n');
+      creditNoteSummary = `\n\nPRECOMPUTED CREDIT NOTE SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total credit notes: ${finalTotal.toLocaleString()}${pythonCalculationNote}\nAll entries:\n${sample}\n`;
+      console.log('[CHAT] Precomputed credit notes (date-filtered scan):', { count: entries.length, total: finalTotal });
+    }
+
     // Deterministic precomputation: sales (Sale) for date-specific queries
     let salesSummary = '';
     if (queryType === 'sales' && dateContext && dateContext.isDateSpecific) {
@@ -1124,15 +1254,66 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         const text = ch.content || (ch._doc && ch._doc.content) || '';
         const found = extractSalesFromText(text, wantedMonths, wantedYears)
           .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
-        if (found.length) entries.push(...found);
+        if (found.length) {
+          console.log('[CHAT] Found', found.length, 'sales entries in chunk from', ch.fileName);
+          console.log('[CHAT] Sample entries:', found.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
+          entries.push(...found);
+        }
       }
-      // No strict day-range or account filtering to keep behavior generic
-      const total = entries.reduce((s, e) => s + (e.amount || 0), 0);
+      
+      // Debug: Check for duplicates and negative amounts
+      console.log('[CHAT] Total entries before filtering:', entries.length);
+      const positiveEntries = entries.filter(e => e.amount > 0);
+      const negativeEntries = entries.filter(e => e.amount < 0);
+      const zeroEntries = entries.filter(e => e.amount === 0);
+      console.log('[CHAT] Positive amounts:', positiveEntries.length, 'Negative amounts:', negativeEntries.length, 'Zero amounts:', zeroEntries.length);
+      
+      if (negativeEntries.length > 0) {
+        console.log('[CHAT] Sample negative entries:', negativeEntries.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
+      }
+      
+      // Remove duplicates based on date + account + amount
+      const uniquePositiveEntries = [];
+      const seen = new Set();
+      for (const entry of positiveEntries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniquePositiveEntries.push(entry);
+        }
+      }
+      
+      console.log('[CHAT] After deduplication: ', uniquePositiveEntries.length, 'unique positive entries');
+      
+      // Debug: List all 22 entries to see what's missing in AI response
+      console.log('[CHAT] All sales entries found:');
+      uniquePositiveEntries.forEach((entry, index) => {
+        console.log(`  ${index + 1}. ${entry.date}: ${entry.account} = ${entry.amount}`);
+      });
+      
+      entries = uniquePositiveEntries;
+      
+      // Use original logic for extraction but Python for accurate total calculation
+      let finalTotal = entries.reduce((s, e) => s + (e.amount || 0), 0); // Fallback calculation
+      let pythonCalculationNote = '';
+      
+      try {
+        console.log('[CHAT] Using Python for accurate sales total calculation from', entries.length, 'entries...');
+        const { calculateSalesTotals } = require('../utils/pythonCalculator');
+        const pythonResult = await calculateSalesTotals(entries, dateContext);
+        finalTotal = pythonResult.total_amount;
+        pythonCalculationNote = ' (Python-calculated)';
+        console.log('[CHAT] Python calculation successful:', { originalTotal: entries.reduce((s, e) => s + (e.amount || 0), 0), pythonTotal: finalTotal });
+      } catch (error) {
+        console.error('[CHAT] Python calculation failed, using original total:', error);
+        pythonCalculationNote = ' (Fallback calculation)';
+      }
+      
       const sample = entries.slice(0, 25)
         .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
         .join('\n');
-      salesSummary = `\n\nPRECOMPUTED SALES (SALE) SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total sales amount: ${total.toLocaleString()}\nSample entries:\n${sample}\n`;
-      console.log('[CHAT] Precomputed sales (date-filtered scan):', { count: entries.length, total });
+      salesSummary = `\n\nPRECOMPUTED SALES (SALE) SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total sales amount: ${finalTotal.toLocaleString()}${pythonCalculationNote}\nSample entries:\n${sample}\n`;
+      console.log('[CHAT] Precomputed sales (date-filtered scan):', { count: entries.length, total: finalTotal });
     }
 
     // Deterministic precomputation: journals (Jrnl) for date-specific queries
@@ -1230,7 +1411,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
+    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + creditNoteSummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');

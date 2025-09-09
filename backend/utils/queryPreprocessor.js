@@ -249,6 +249,37 @@ VOUCHER COUNTING RULES:
 `;
   }
 
+  // Add specific instructions for sales queries to ensure completeness
+  if (/sales?|revenue|income/i.test(originalQuery)) {
+    prompt += `
+SALES LISTING REQUIREMENTS:
+1. When listing sales vouchers, include ALL entries found in the data
+2. Do NOT skip any dates - include isolated single-day entries
+3. List entries chronologically by date (earliest to latest)
+4. For each entry, show: Date, Customer/Account Name, Amount (if requested)
+5. If you find entries on dates like 4-Jul, 8-Jul, 21-Jul, 25-Jul, 26-Jul - include ALL of them
+6. Do NOT group or summarize - list each individual voucher
+7. CRITICAL: Count every single sales entry, even if it's the only one on that date
+8. Verify your list matches the total count mentioned in the system
+`;
+  }
+
+  // Add specific instructions for credit note queries to ensure completeness
+  if (/credit.*note|c\/note|cnote/i.test(originalQuery)) {
+    prompt += `
+CREDIT NOTE LISTING REQUIREMENTS:
+1. When listing credit notes, include ALL entries found in the data - do NOT skip any
+2. List entries chronologically by date (earliest to latest)
+3. For each entry, show: Date, Customer/Account Name, Amount
+4. Include ALL credit notes regardless of amount size (small or large amounts)
+5. Do NOT skip high-value entries - they are often the most important
+6. CRITICAL: Count every single credit note entry found in the system
+7. Verify your total matches the system calculation exactly
+8. If system shows x entries, your response must list all x entries
+9. Double-check that large amounts are included in your calculation
+`;
+  }
+
   // Add specific instructions for loan-related queries
   if (isLoanQuery) {
     prompt += `
