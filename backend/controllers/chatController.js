@@ -203,6 +203,134 @@ function extractCreditNotesFromText(content, wantedMonthsSet, wantedYearsSet) {
   return results;
 }
 
+// Helper: extract cash/bank transactions from CSV-like content for cash balance calculation
+function extractCashTransactionsFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  
+  // Cash/Bank account patterns
+  const cashPatterns = [
+    /kotak mahindra bank/i,
+    /hdfc bank/i,
+    /icici bank/i,
+    /sbi bank/i,
+    /axis bank/i,
+    /canara bank/i,
+    /pnb bank/i,
+    /union bank/i,
+    /indusind bank/i,
+    /dcb niyo/i,
+    /cash/i,
+    /bank/i
+  ];
+  
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  
+  let currentDate = '';
+  let currentVoucherType = '';
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    
+    const parts = line.split(',');
+    if (parts.length < 5) continue;
+    
+    const dateStr = parts[0]?.trim().replace(/"/g, '');
+    const account = parts[1]?.trim().replace(/"/g, '');
+    const voucherType = parts[3]?.trim().replace(/"/g, '');
+    const amtStr4 = parts[4]?.trim().replace(/"/g, '');
+    const amtStr5 = parts[5]?.trim().replace(/"/g, '');
+    
+    // Update current date and voucher type if this is a primary entry
+    if (dateStr && dateRegex.test(dateStr)) {
+      currentDate = dateStr;
+      if (voucherType) currentVoucherType = voucherType;
+    }
+    
+    // Check date filtering
+    if (!currentDate) continue;
+    const dm = dateRegex.exec(currentDate);
+    if (!dm) continue;
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    
+    // Check if this line contains a cash/bank account
+    const isCashAccount = cashPatterns.some(pattern => pattern.test(account));
+    if (!isCashAccount) continue;
+    
+    // Parse amount from either column 4 or 5
+    let amount = 0;
+    let isCredit = false;
+    
+    if (amtStr4 && amtStr4 !== '' && !isNaN(Number(amtStr4.replace(/[,-]/g, '')))) {
+      let amtRaw = amtStr4;
+      let isNegative = amtRaw.startsWith('-');
+      if (isNegative) amtRaw = amtRaw.substring(1);
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      amount = Number(amtRaw);
+      if (isNegative) amount = -amount;
+      isCredit = false; // Debit to bank (outflow)
+    } else if (amtStr5 && amtStr5 !== '' && !isNaN(Number(amtStr5.replace(/[,-]/g, '')))) {
+      let amtRaw = amtStr5;
+      let isNegative = amtRaw.startsWith('-');
+      if (isNegative) amtRaw = amtRaw.substring(1);
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      amount = Number(amtRaw);
+      if (isNegative) amount = -amount;
+      isCredit = true; // Credit to bank (inflow)
+    }
+    
+    if (amount !== 0) {
+      // For cash balance calculation, we need to consider the voucher type:
+      // - For Receipts (Rcpt): Credit to bank = money coming IN (positive)
+      // - For Payments (Pymt): Credit to bank = money going OUT (negative)
+      // - For Journals (Jrnl): Follow the natural debit/credit logic
+      
+      let cashFlowAmount;
+      if (currentVoucherType && currentVoucherType.toLowerCase().includes('pymt')) {
+        // For payments: Credit to bank means money going out (negative)
+        cashFlowAmount = isCredit ? -amount : amount;
+      } else if (currentVoucherType && currentVoucherType.toLowerCase().includes('rcpt')) {
+        // For receipts: Credit to bank means money coming in (positive)
+        cashFlowAmount = isCredit ? amount : -amount;
+      } else {
+        // For journals and others: Credit = positive, Debit = negative
+        cashFlowAmount = isCredit ? amount : -amount;
+      }
+      
+      // Determine transaction type
+      let transactionType = 'unknown';
+      if (currentVoucherType) {
+        const vType = currentVoucherType.toLowerCase();
+        if (vType.includes('rcpt') || vType.includes('receipt')) {
+          transactionType = 'receipt';
+        } else if (vType.includes('pymt') || vType.includes('payment')) {
+          transactionType = 'payment';
+        } else if (vType.includes('jrnl') || vType.includes('journal')) {
+          transactionType = 'journal';
+        } else if (vType.includes('sale')) {
+          transactionType = 'sale';
+        }
+      }
+      
+      results.push({ 
+        date: currentDate, 
+        account, 
+        amount: cashFlowAmount, 
+        voucherType: currentVoucherType,
+        transactionType
+      });
+    }
+  }
+  
+  return results;
+}
+
 // Helper: extract entries for a given voucher type token (e.g., 'Jrnl') with date filters
 function extractEntriesOfTypeFromText(content, typeToken, wantedMonthsSet, wantedYearsSet) {
   const results = [];
@@ -247,10 +375,11 @@ const QUERY_TYPE_KEYWORDS = {
   sales: ['sale', 'sales', 'revenue', 'income', 'sold'],
   purchase: ['purchase', 'purchases', 'purc', 'buy', 'bought', 'supplier', 'vendor', 'material', 'inventory', 'stock', 'goods received', 'grn'],
   journal: ['journal', 'jrnl', 'adjustment', 'transfer'],
-  expense: ['expense', 'expenses', 'cost', 'expenditure'],
+  expense: ['expense', 'expenses', 'cost', 'expenditure', 'pymt', 'payment', 'payments', 'outflow', 'outgoing', 'paid', 'supplier', 'vendor', 'loan', 'tds', 'tax', 'salary', 'rent', 'insurance', 'travel', 'freight', 'shipping', 'custom', 'duty'],
   receipt: ['receipt', 'rcpt', 'received', 'collection'],
   payment: ['payment', 'payments', 'pymt', 'paid', 'pay'],
   credit_note: ['credit note', 'credit notes', 'c/note', 'cnote', 'sales return', 'return'],
+  cash_balance: ['cash', 'bank', 'icici', 'hdfc', 'sbi', 'kotak', 'indusind', 'axis', 'canara', 'pnb', 'union bank', 'current account', 'savings account', 'ca', 'sb', 'receipt', 'rcpt', 'payment', 'pymt', 'journal', 'jrnl'],
   profit: ['profit', 'loss', 'net income', 'earnings', 'pnl', 'p&l', 'profitability', 'accounting profit', 'net profit', 'gross profit']
 };
 
@@ -293,14 +422,27 @@ function detectBankQuery(query) {
 function filterChunksByType(chunks, type) {
   if (!type) return chunks;
   const keywords = QUERY_TYPE_KEYWORDS[type];
-  return chunks.filter(chunk => {
+  
+  if (!keywords) {
+    console.log('[CHAT] No keywords found for query type:', type);
+    return chunks; // Return all chunks if no keywords defined
+  }
+  
+  console.log('[CHAT] Filtering chunks by type:', type, 'using keywords:', keywords);
+  
+  const filtered = chunks.filter(chunk => {
     const content = (chunk.content || '').toLowerCase();
-    if (type === 'sales') {
-      // Generic keyword-based filtering for sales (no special exclusions)
-      return keywords.some(k => content.includes(k));
+    const matches = keywords.some(k => content.includes(k.toLowerCase()));
+    
+    if (type === 'cash_balance' && matches) {
+      console.log('[CHAT] Found cash_balance match in chunk with keywords:', keywords.filter(k => content.includes(k.toLowerCase())));
     }
-    return keywords.some(k => content.includes(k));
+    
+    return matches;
   });
+  
+  console.log('[CHAT] Filtered chunks:', filtered.length, 'out of', chunks.length, 'for type:', type);
+  return filtered;
 }
 
 // Build a focused keyword list based on the query and detected type
@@ -333,6 +475,12 @@ function buildQueryKeywords(userQuestion, queryType, bankName = null) {
     base.push('expense', 'expenses', 'rent', 'salary', 'bank charges', 'fees');
   } else if (queryType === 'receipt') {
     base.push('receipt', 'rcpt', 'income');
+  } else if (queryType === 'cash_balance') {
+    base.push(
+      'cash', 'bank', 'icici', 'hdfc', 'sbi', 'kotak', 'indusind', 'axis', 
+      'canara', 'pnb', 'union bank', 'current account', 'savings account',
+      'ca', 'sb', 'receipt', 'rcpt', 'payment', 'pymt', 'journal', 'jrnl'
+    );
   }
 
   // Add significant words from the question (simple split, keep words >= 3 chars)
@@ -1238,6 +1386,79 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Precomputed credit notes (date-filtered scan):', { count: entries.length, total: finalTotal });
     }
 
+    // Deterministic precomputation: cash balance for cash-related queries
+    let cashBalanceSummary = '';
+    if (queryType === 'cash_balance' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      let cashTransactions = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = extractCashTransactionsFromText(text, wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) {
+          console.log('[CHAT] Found', found.length, 'cash transactions in chunk from', ch.fileName);
+          cashTransactions.push(...found);
+        }
+      }
+
+      // Remove duplicates based on date + account + amount
+      const uniqueCashTransactions = [];
+      const seen = new Set();
+      for (const entry of cashTransactions) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniqueCashTransactions.push(entry);
+        }
+      }
+
+      console.log('[CHAT] After deduplication:', uniqueCashTransactions.length, 'unique cash transactions');
+
+      // Calculate net cash balance
+      const receipts = uniqueCashTransactions.filter(t => t.amount > 0);
+      const payments = uniqueCashTransactions.filter(t => t.amount < 0);
+      const totalReceipts = receipts.reduce((s, t) => s + t.amount, 0);
+      const totalPayments = Math.abs(payments.reduce((s, t) => s + t.amount, 0));
+      const netCashBalance = totalReceipts - totalPayments;
+
+      // Group by account for detailed breakdown
+      const byAccount = {};
+      uniqueCashTransactions.forEach(t => {
+        const account = t.account.toLowerCase();
+        if (!byAccount[account]) {
+          byAccount[account] = { receipts: 0, payments: 0, net: 0, count: 0 };
+        }
+        if (t.amount > 0) {
+          byAccount[account].receipts += t.amount;
+        } else {
+          byAccount[account].payments += Math.abs(t.amount);
+        }
+        byAccount[account].net = byAccount[account].receipts - byAccount[account].payments;
+        byAccount[account].count++;
+      });
+
+      // Create summary
+      const sample = uniqueCashTransactions.slice(0, 20)
+        .map(t => `- ${t.date} | ${t.account} | ${t.transactionType} | Amt: ${t.amount.toLocaleString()} | ${t.voucherType}`)
+        .join('\n');
+
+      const accountSummary = Object.entries(byAccount)
+        .sort(([,a], [,b]) => Math.abs(b.net) - Math.abs(a.net))
+        .slice(0, 10)
+        .map(([acc, data]) => `- ${acc}: Net ${data.net.toLocaleString()} (R: ${data.receipts.toLocaleString()}, P: ${data.payments.toLocaleString()})`)
+        .join('\n');
+
+      cashBalanceSummary = `\n\nPRECOMPUTED CASH BALANCE SUMMARY:\n- Total cash transactions: ${uniqueCashTransactions.length}\n- Total receipts: ${totalReceipts.toLocaleString()}\n- Total payments: ${totalPayments.toLocaleString()}\n- Net cash balance: ${netCashBalance.toLocaleString()}\n\nAccount-wise breakdown:\n${accountSummary}\n\nSample transactions:\n${sample}\n`;
+      console.log('[CHAT] Precomputed cash balance:', { transactions: uniqueCashTransactions.length, receipts: totalReceipts, payments: totalPayments, net: netCashBalance });
+    }
+
     // Deterministic precomputation: sales (Sale) for date-specific queries
     let salesSummary = '';
     if (queryType === 'sales' && dateContext && dateContext.isDateSpecific) {
@@ -1411,7 +1632,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + creditNoteSummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
+    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + creditNoteSummary + cashBalanceSummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');

@@ -280,6 +280,38 @@ CREDIT NOTE LISTING REQUIREMENTS:
 `;
   }
 
+  if (/cash balance|cash position|bank balance|cash flow|balance/i.test(originalQuery)) {
+    prompt += `
+CASH BALANCE LISTING REQUIREMENTS:
+1. When calculating cash balance, include ALL cash and bank account transactions found in the data
+2. List transactions chronologically by date
+3. Separate receipts (positive amounts) from payments (negative amounts)
+4. Calculate net balance: Total Receipts - Total Payments
+5. Group by account/bank for detailed breakdown
+6. Include transaction types (Receipt, Payment, Journal, etc.)
+7. Show running balance if possible
+8. Verify your calculations match the precomputed totals in the system summary
+9. Include all major cash/bank accounts (ICICI, HDFC, SBI, Kotak, etc.)
+10. BE COMPREHENSIVE: Do not omit any cash-related transactions
+`;
+  }
+
+  if (/major expense|biggest expense|largest expense|top expense|expense|expenditure|outflow|payment/i.test(originalQuery)) {
+    prompt += `
+MAJOR EXPENSE IDENTIFICATION REQUIREMENTS:
+1. CRITICAL: Look at ALL payment vouchers (Pymt type) and find the LARGEST amounts by value
+2. IGNORE account names - focus ONLY on payment amounts regardless of whether account has "Expense" in name
+3. Major expenses are the BIGGEST payments by amount.
+4. Sort ALL payments by amount (highest to lowest) and show TOP 5-10 largest
+5. Include: supplier payments, loan payments, vendor payments, tax payments, salary payments
+6. Show: Date, Payee/Account Name, Amount, Voucher Type (Pymt/Jrnl)
+7. Calculate percentage of each payment relative to total monthly payments
+8. EXAMPLE FORMAT: "Mingjie Stone Spain S L - ₹65,29,213 (21% of total payments)"
+9. DO NOT focus on small amounts like ₹12,000 rent when there are ₹65+ lakh payments
+10. MAJOR means LARGEST by amount - ignore traditional expense categorization
+`;
+  }
+
   // Add specific instructions for loan-related queries
   if (isLoanQuery) {
     prompt += `
