@@ -668,18 +668,52 @@ exports.chat = async (req, res) => {
                !excludeKeywords.some(keyword => lowerAccount.includes(keyword));
       };
       
-      for (const chunk of filteredChunks) {
+      // Helper function to check if a date matches the query context
+      const isDateInQueryRange = (dateStr) => {
+        if (!dateContext.isDateSpecific) return true;
+        
+        // Parse the date from format "DD-MMM-YY"
+        const dateMatch = dateStr.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+        if (!dateMatch) {
+          console.log('[CHAT] Date parsing failed for:', dateStr);
+          return false;
+        }
+        
+        const [, day, monthAbbr, year] = dateMatch;
+        const fullYear = '20' + year;
+        
+        // Check if this date matches the query context
+        if (dateContext.months.length > 0 && dateContext.years.length > 0) {
+          const monthMatches = dateContext.months.some(m => 
+            m.toLowerCase().slice(0, 3) === monthAbbr.toLowerCase()
+          );
+          const yearMatches = dateContext.years.some(y => 
+            fullYear === y || year === y.slice(-2)
+          );
+          
+          const matches = monthMatches && yearMatches;
+          console.log('[CHAT] Date check:', dateStr, 'Month match:', monthMatches, 'Year match:', yearMatches, 'Final:', matches);
+          return matches;
+        }
+        
+        return true;
+      };
+      
+      for (const chunk of dateFilteredChunks) {
         const lines = chunk.content.split('\n');
         for (const line of lines) {
           // REVENUE: Sales vouchers (Type: "Sale")
           if (line.includes('"Sale"')) {
             const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Sale"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
             if (match) {
+              const dateStr = match[1];
               const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
               const account = match[2];
-              if (!isNaN(amount) && !isBalanceSheetItem(account)) {
+              
+              // Only include if date matches query range
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isDateInQueryRange(dateStr)) {
                 totalRevenue += amount;
-                revenueEntries.push({ date: match[1], account, amount, type: 'Sales' });
+                revenueEntries.push({ date: dateStr, account, amount, type: 'Sales' });
               }
             }
           }
@@ -688,11 +722,14 @@ exports.chat = async (req, res) => {
           if (line.includes('"C/Note"')) {
             const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","C\/Note"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
             if (match) {
+              const dateStr = match[1];
               const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
               const account = match[2];
-              if (!isNaN(amount) && !isBalanceSheetItem(account)) {
+              
+              // Only include if date matches query range
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isDateInQueryRange(dateStr)) {
                 totalRevenue -= amount; // Subtract credit notes as they represent sales returns
-                revenueEntries.push({ date: match[1], account, amount: -amount, type: 'Sales Return (Credit Note)' });
+                revenueEntries.push({ date: dateStr, account, amount: -amount, type: 'Sales Return (Credit Note)' });
               }
             }
           }
@@ -701,11 +738,14 @@ exports.chat = async (req, res) => {
           if (line.includes('"Rcpt"')) {
             const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Rcpt"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
             if (match) {
+              const dateStr = match[1];
               const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
               const account = match[2];
-              if (!isNaN(amount) && !isBalanceSheetItem(account) && isReceiptIncome(account)) {
+              
+              // Only include if date matches query range
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isReceiptIncome(account) && isDateInQueryRange(dateStr)) {
                 totalRevenue += amount;
-                revenueEntries.push({ date: match[1], account, amount, type: 'Business Income Receipt' });
+                revenueEntries.push({ date: dateStr, account, amount, type: 'Business Income Receipt' });
               }
             }
           }
@@ -714,6 +754,7 @@ exports.chat = async (req, res) => {
           if (line.includes('"Purc"')) {
             const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Purc"[^,]*,(-?[0-9,]+(?:\.[0-9]+)?)/);
             if (match) {
+              const dateStr = match[1];
               const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
               const account = match[2];
               const lowerAccount = account.toLowerCase();
@@ -722,9 +763,10 @@ exports.chat = async (req, res) => {
               const assetKeywords = ['marble block', 'machinery', 'equipment', 'furniture', 'vehicle', 'computer'];
               const isAssetPurchase = assetKeywords.some(keyword => lowerAccount.includes(keyword));
               
-              if (!isNaN(amount) && !isBalanceSheetItem(account) && !isAssetPurchase) {
+              // Only include if date matches query range
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && !isAssetPurchase && isDateInQueryRange(dateStr)) {
                 totalExpenses += amount;
-                expenseEntries.push({ date: match[1], account, amount, type: 'Purchase (COGS)' });
+                expenseEntries.push({ date: dateStr, account, amount, type: 'Purchase (COGS)' });
               }
             }
           }
@@ -733,6 +775,7 @@ exports.chat = async (req, res) => {
           if (line.includes('"Pymt"')) {
             const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Pymt",(-?[0-9,]+(?:\.[0-9]+)?)/);
             if (match) {
+              const dateStr = match[1];
               const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
               const account = match[2];
               const lowerAccount = account.toLowerCase();
@@ -747,9 +790,10 @@ exports.chat = async (req, res) => {
               
               const isOperatingExpense = operatingExpenseKeywords.some(keyword => lowerAccount.includes(keyword));
               
-              if (!isNaN(amount) && !isBalanceSheetItem(account) && isOperatingExpense && amount < 500000) {
+              // Only include if date matches query range
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isOperatingExpense && amount < 500000 && isDateInQueryRange(dateStr)) {
                 totalExpenses += amount;
-                expenseEntries.push({ date: match[1], account, amount, type: 'Operating Payment' });
+                expenseEntries.push({ date: dateStr, account, amount, type: 'Operating Payment' });
               }
             }
           }
@@ -758,8 +802,10 @@ exports.chat = async (req, res) => {
           if (line.includes('"Jrnl"')) {
             const match = line.match(/^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","[^"]*","Jrnl",(-?[0-9,]+(?:\.[0-9]+)?)/);
             if (match) {
+              const dateStr = match[1];
               const amount = Math.abs(parseFloat(match[3].replace(/,/g, '')));
               const account = match[2];
+              
               // Include journal entries that are operating expenses (rent, salaries, utilities, etc.)
               const expenseKeywords = [
                 'rent', 'salary', 'expense', 'electricity', 'insurance', 'professional', 'tax', 
@@ -769,15 +815,17 @@ exports.chat = async (req, res) => {
               ];
               const excludeJournalKeywords = [
                 'interest on loan', 'depreciation', 'provision', 'capital', 'advance', 'loan',
-                'marble', 'block', 'inventory', 'stock', 'asset', 'investment', 'incorporation'
+                'marble', 'block', 'inventory', 'stock', 'asset', 'investment', 'incorporation',
+                'profit & loss', 'profit retained' // Exclude P&L transfer entries
               ];
               const isExpense = expenseKeywords.some(keyword => account.toLowerCase().includes(keyword)) &&
                               !excludeJournalKeywords.some(keyword => account.toLowerCase().includes(keyword)) &&
                               amount < 200000; // Limit journal expenses to reasonable amounts
               
-              if (!isNaN(amount) && !isBalanceSheetItem(account) && isExpense) {
+              // Only include if date matches query range
+              if (!isNaN(amount) && !isBalanceSheetItem(account) && isExpense && isDateInQueryRange(dateStr)) {
                 totalExpenses += amount;
-                expenseEntries.push({ date: match[1], account, amount, type: 'Operating Expense (Journal)' });
+                expenseEntries.push({ date: dateStr, account, amount, type: 'Operating Expense (Journal)' });
               }
             }
           }
@@ -810,6 +858,17 @@ exports.chat = async (req, res) => {
         profit: netProfit,
         revenueEntries: revenueEntries.length,
         expenseEntries: expenseEntries.length 
+      });
+      
+      // Debug: Show sample entries that were included
+      console.log('[CHAT] Sample revenue entries included:');
+      revenueEntries.slice(0, 5).forEach(e => {
+        console.log(`  ${e.date}: ${e.account} = ₹${e.amount.toLocaleString()} [${e.type}]`);
+      });
+      
+      console.log('[CHAT] Sample expense entries included:');
+      expenseEntries.slice(0, 10).forEach(e => {
+        console.log(`  ${e.date}: ${e.account} = ₹${e.amount.toLocaleString()} [${e.type}]`);
       });
     }
     
