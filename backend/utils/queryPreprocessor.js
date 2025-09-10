@@ -1,6 +1,55 @@
 // Query preprocessing utility to improve AI understanding
 // Handles date normalization, month name expansion, and other query improvements
 
+/**
+ * Helper function to get all months between two given months and years
+ * @param {string} startMon - Start month (e.g., 'jul')
+ * @param {string} endMon - End month (e.g., 'sep')
+ * @param {string} startYY - Start year (e.g., '22')
+ * @param {string} endYY - End year (e.g., '22')
+ * @returns {Array} - Array of {month, year} objects for all months in range
+ */
+function getMonthsInRange(startMon, endMon, startYY, endYY) {
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const result = [];
+  
+  const startMonthIdx = months.indexOf(startMon.toLowerCase());
+  const endMonthIdx = months.indexOf(endMon.toLowerCase());
+  const startYear = parseInt(startYY);
+  const endYear = parseInt(endYY);
+  
+  if (startMonthIdx === -1 || endMonthIdx === -1) {
+    return result;
+  }
+  
+  if (startYear === endYear) {
+    // Same year - iterate from start month to end month
+    for (let i = startMonthIdx; i <= endMonthIdx; i++) {
+      result.push({ month: months[i], year: startYY });
+    }
+  } else {
+    // Multi-year range
+    // From start month to end of start year
+    for (let i = startMonthIdx; i < 12; i++) {
+      result.push({ month: months[i], year: startYY });
+    }
+    
+    // Full years in between
+    for (let year = startYear + 1; year < endYear; year++) {
+      for (let i = 0; i < 12; i++) {
+        result.push({ month: months[i], year: year.toString().slice(-2) });
+      }
+    }
+    
+    // From start of end year to end month
+    for (let i = 0; i <= endMonthIdx; i++) {
+      result.push({ month: months[i], year: endYY });
+    }
+  }
+  
+  return result;
+}
+
 const monthMappings = {
   'january': 'Jan',
   'february': 'Feb', 
@@ -116,12 +165,88 @@ function extractDateContext(query) {
   });
   
   // Check for date-related keywords
-  const dateKeywords = ['date', 'month', 'year', 'period', 'during', 'in', 'on', 'between'];
+  const dateKeywords = ['date', 'month', 'year', 'period', 'during', 'in', 'on', 'between', 'quarter'];
   dateKeywords.forEach(keyword => {
     if (lowerQuery.includes(keyword)) {
       context.hasDateQuery = true;
     }
   });
+
+  // NEW: detect quarter-based queries
+  const quarterPatterns = [
+    // Q1, Q2, Q3, Q4 format
+    /\b(q[1-4])\s+(\d{4})\b/i,
+    /\b(\d{4})\s+(q[1-4])\b/i,
+    // First/Second/Third/Fourth quarter format (with typo support)
+    /\b(first|second|third|fourth)\s+(quarter|quater)\s+(\d{4})\b/i,
+    /\b(\d{4})\s+(first|second|third|fourth)\s+(quarter|quater)\b/i,
+    // Quarter 1/2/3/4 format (with typo support)
+    /\b(quarter|quater)\s+([1-4])\s+(\d{4})\b/i,
+    /\b(\d{4})\s+(quarter|quater)\s+([1-4])\b/i
+  ];
+
+  for (const qp of quarterPatterns) {
+    const m = query.match(qp);
+    if (m) {
+      let quarterNum, year;
+      
+      // Extract quarter number and year from different formats
+      if (m[1] && m[2]) {
+        if (/^q[1-4]$/i.test(m[1])) {
+          // Q1 2023 format
+          quarterNum = parseInt(m[1].slice(1));
+          year = m[2];
+        } else if (/^(first|second|third|fourth)$/i.test(m[1])) {
+          // first quarter 2023 format
+          const quarterMap = { 'first': 1, 'second': 2, 'third': 3, 'fourth': 4 };
+          quarterNum = quarterMap[m[1].toLowerCase()];
+          year = m[3]; // Year is in group 3 for this pattern
+        } else if (/^\d{4}$/.test(m[1])) {
+          // 2023 Q1 format
+          year = m[1];
+          if (/^q[1-4]$/i.test(m[2])) {
+            quarterNum = parseInt(m[2].slice(1));
+          } else if (/^(first|second|third|fourth)$/i.test(m[2])) {
+            const quarterMap = { 'first': 1, 'second': 2, 'third': 3, 'fourth': 4 };
+            quarterNum = quarterMap[m[2].toLowerCase()];
+          } else if (/^[1-4]$/.test(m[3])) {
+            // 2023 quarter 1 format
+            quarterNum = parseInt(m[3]);
+          }
+        } else if (/^(quarter|quater)$/i.test(m[1])) {
+          // quarter 1 2023 format
+          quarterNum = parseInt(m[2]);
+          year = m[3];
+        }
+      }
+      
+      if (quarterNum && year) {
+        // Map quarter to months
+        const quarterMonths = {
+          1: ['jan', 'feb', 'mar'],
+          2: ['apr', 'may', 'jun'],
+          3: ['jul', 'aug', 'sep'],
+          4: ['oct', 'nov', 'dec']
+        };
+        
+        const months = quarterMonths[quarterNum];
+        if (months) {
+          context.hasDateQuery = true;
+          context.isDateSpecific = true;
+          context.specificDateRange = `Q${quarterNum} ${year}`;
+          context.months.push(...months.map(m => capitalize3(m)));
+          context.years.push(year);
+          context.dateTerms.push(`Q${quarterNum}`, year);
+          
+          // Set range for getMonthsInRange compatibility
+          const yy = normalizeToYY(year);
+          context.rangeStart = { mon: months[0], yy: yy };
+          context.rangeEnd = { mon: months[2], yy: yy };
+          break;
+        }
+      }
+    }
+  }
 
   // NEW: detect explicit DD-MMM-YY or DD-MM-YY single date
   const singleDateRegex = /\b(\d{1,2})[-\/](\d{1,2}|[A-Za-z]{3,})[-\/](\d{2,4})\b/;
@@ -142,25 +267,55 @@ function extractDateContext(query) {
 
   // NEW: detect explicit ranges: "from A to B" or "between A and B"
   const rangePatterns = [
+    // DD-MM-YY format ranges
     /\bfrom\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+to\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i,
-    /\bbetween\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+and\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i
+    /\bbetween\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+and\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i,
+    // Month name format ranges: "from july 2024 to sept 2024"
+    /\bfrom\s+([A-Za-z]{3,})\s+(\d{4})\s+to\s+([A-Za-z]{3,})\s+(\d{4})\b/i,
+    /\bbetween\s+([A-Za-z]{3,})\s+(\d{4})\s+and\s+([A-Za-z]{3,})\s+(\d{4})\b/i
   ];
   for (const rp of rangePatterns) {
     const m = query.match(rp);
     if (m) {
-      const startStr = m[1];
-      const endStr = m[3];
-      const start = parseDateddMonYY(startStr);
-      const end = parseDateddMonYY(endStr);
+      let start, end, startStr, endStr;
+      
+      // Check if this is a month name format range (groups 1,2,3,4)
+      if (m[1] && m[2] && m[3] && m[4] && /^[A-Za-z]{3,}$/.test(m[1])) {
+        // Month name format: "from july 2024 to sept 2024"
+        const startMonth = m[1];
+        const startYear = m[2];
+        const endMonth = m[3];
+        const endYear = m[4];
+        
+        const startMonAbbr = normalizeToMonthAbbrev(startMonth);
+        const endMonAbbr = normalizeToMonthAbbrev(endMonth);
+        const startYY = normalizeToYY(startYear);
+        const endYY = normalizeToYY(endYear);
+        
+        if (startMonAbbr && endMonAbbr && startYY && endYY) {
+          start = { mon: startMonAbbr.toLowerCase(), yy: startYY };
+          end = { mon: endMonAbbr.toLowerCase(), yy: endYY };
+          startStr = `${startMonth} ${startYear}`;
+          endStr = `${endMonth} ${endYear}`;
+        }
+      } else {
+        // DD-MM-YY format: "from 01-07-2024 to 30-09-2024"
+        startStr = m[1];
+        endStr = m[3];
+        start = parseDateddMonYY(startStr);
+        end = parseDateddMonYY(endStr);
+      }
+      
       if (start && end) {
         context.hasDateQuery = true;
         context.isDateSpecific = true;
         context.specificDateRange = `${startStr} to ${endStr}`;
         context.rangeStart = start;
         context.rangeEnd = end;
-        // Populate months/years for downstream filters without overriding existing tokens
-        const monthsSet = new Set([start.mon, end.mon]);
-        const yearsSet = new Set([start.yy, end.yy]);
+        // Populate ALL months in the range, not just start and end
+        const allMonthsInRange = getMonthsInRange(start.mon, end.mon, start.yy, end.yy);
+        const monthsSet = new Set(allMonthsInRange.map(m => m.month));
+        const yearsSet = new Set(allMonthsInRange.map(m => m.year));
         context.months.push(...Array.from(monthsSet).map(x => capitalize3(x)));
         context.years.push(...Array.from(yearsSet).map(y => (y.length === 2 ? '20' + y : y)));
         break;
