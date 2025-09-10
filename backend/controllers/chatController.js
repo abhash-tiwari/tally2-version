@@ -421,6 +421,14 @@ function detectBankQuery(query) {
 
 function filterChunksByType(chunks, type) {
   if (!type) return chunks;
+  
+  // For expense queries, skip keyword filtering and return all chunks
+  // Let the AI analyze all data and identify major expenses directly
+  if (type === 'expense') {
+    console.log('[CHAT] Expense query detected - returning all chunks for AI analysis');
+    return chunks;
+  }
+  
   const keywords = QUERY_TYPE_KEYWORDS[type];
   
   if (!keywords) {

@@ -299,16 +299,13 @@ CASH BALANCE LISTING REQUIREMENTS:
   if (/major expense|biggest expense|largest expense|top expense|expense|expenditure|outflow|payment/i.test(originalQuery)) {
     prompt += `
 MAJOR EXPENSE IDENTIFICATION REQUIREMENTS:
-1. CRITICAL: Look at ALL payment vouchers (Pymt type) and find the LARGEST amounts by value
-2. IGNORE account names - focus ONLY on payment amounts regardless of whether account has "Expense" in name
-3. Major expenses are the BIGGEST payments by amount.
-4. Sort ALL payments by amount (highest to lowest) and show TOP 5-10 largest
-5. Include: supplier payments, loan payments, vendor payments, tax payments, salary payments
-6. Show: Date, Payee/Account Name, Amount, Voucher Type (Pymt/Jrnl)
-7. Calculate percentage of each payment relative to total monthly payments
-8. EXAMPLE FORMAT: "Mingjie Stone Spain S L - ₹65,29,213 (21% of total payments)"
-9. DO NOT focus on small amounts like ₹12,000 rent when there are ₹65+ lakh payments
-10. MAJOR means LARGEST by amount - ignore traditional expense categorization
+1. Find ALL lines with "Pymt" (Payment vouchers) in the data
+2. Extract the amount from each payment line
+3. Convert amounts to positive and sort by size (largest first)
+6. Show the TOP 5-10 largest payment amounts regardless of account name
+7. Format: "Company Name - ₹Amount (Date)"
+8. Ignore small amounts under ₹1 lakh when there are crore-level payments
+10. CRITICAL: Focus on the AMOUNT field after "Pymt", not the account name
 `;
   }
 
