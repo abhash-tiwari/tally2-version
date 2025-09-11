@@ -126,6 +126,114 @@ function extractPaymentsFromText(content, wantedMonthsSet, wantedYearsSet) {
   return results;
 }
 
+// Helper: extract Custom Duty expenses by exact description match
+function extractCustomDutyFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  
+  console.log('[CUSTOM_DUTY] Processing', lines.length, 'lines for Custom Duty extraction');
+  
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    
+    // Look for Custom Duty in the account/description field (including variations)
+    if (line.includes('Custom Duty') || line.includes('Indian Customs') || line.includes('Customs')) {
+      console.log('[CUSTOM_DUTY] Found Custom Duty line:', line.substring(0, 100));
+      
+      // Check if this line has a date (same line)
+      const dateMatch = dateRegex.exec(line);
+      if (!dateMatch) {
+        console.log('[CUSTOM_DUTY] No date found on Custom Duty line, skipping');
+        continue;
+      }
+      
+      const currentDate = dateMatch[0];
+      const mon = dateMatch[2].toLowerCase();
+      const yy = dateMatch[3];
+      
+      console.log('[CUSTOM_DUTY] Date found:', currentDate, 'Month:', mon, 'Year:', yy);
+      console.log('[CUSTOM_DUTY] Wanted months:', Array.from(wantedMonthsSet), 'Wanted years:', Array.from(wantedYearsSet));
+      
+      const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+      const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+      
+      console.log('[CUSTOM_DUTY] Month OK:', monthOk, 'Year OK:', yearOk);
+      
+      if (!monthOk || !yearOk) {
+        console.log('[CUSTOM_DUTY] Date filtering failed, skipping entry');
+        continue;
+      }
+      
+      // Parse the line to extract amount
+      const fields = [];
+      let current = '';
+      let inQuotes = false;
+      
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+          inQuotes = !inQuotes;
+          current += char;
+        } else if (char === ',' && !inQuotes) {
+          fields.push(current);
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      if (current) fields.push(current);
+      
+      // Find the Custom Duty account and corresponding amount
+      let account = '';
+      let amount = 0;
+      
+      console.log('[CUSTOM_DUTY] Parsing fields:', fields);
+      
+      // Look for account field containing Custom Duty variations
+      for (let i = 0; i < fields.length; i++) {
+        const field = fields[i].replace(/^"|"$/g, '');
+        if (field.includes('Custom Duty') || field.includes('Indian Customs') || field.includes('Customs')) {
+          account = field;
+          console.log('[CUSTOM_DUTY] Found account field:', account);
+          
+          // Look for amount in subsequent fields (typically field 4 or 5 in CSV)
+          for (let j = i + 1; j < fields.length; j++) {
+            const amtField = fields[j].replace(/^"|"$/g, '');
+            console.log('[CUSTOM_DUTY] Checking amount field', j, ':', amtField);
+            
+            if (amtField && amtField.match(/^-?[0-9,.]+$/)) {
+              const amtRaw = amtField.replace(/[,-]/g, '');
+              const parsedAmount = Math.abs(Number(amtRaw)); // Take absolute value for expenses
+              console.log('[CUSTOM_DUTY] Parsed amount:', parsedAmount);
+              
+              if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
+                amount = parsedAmount;
+                console.log('[CUSTOM_DUTY] Valid amount found:', amount);
+                break;
+              }
+            }
+          }
+          break;
+        }
+      }
+      
+      if (account && amount > 0) {
+        results.push({ 
+          date: currentDate, 
+          account, 
+          amount,
+          description: 'Custom Duty'
+        });
+      }
+    }
+  }
+  
+  return results;
+}
+
 // Helper: extract sales entries (Type: Sale) from CSV-like content for a specific month/year
 function extractSalesFromText(content, wantedMonthsSet, wantedYearsSet) {
   const results = [];
@@ -1467,6 +1575,62 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Precomputed cash balance:', { transactions: uniqueCashTransactions.length, receipts: totalReceipts, payments: totalPayments, net: netCashBalance });
     }
 
+    // Deterministic precomputation: Custom Duty expenses for expense queries
+    let customDutySummary = '';
+    if (queryType === 'expense' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      let customDutyEntries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = extractCustomDutyFromText(text, wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) {
+          console.log('[CHAT] Found', found.length, 'Custom Duty entries in chunk from', ch.fileName);
+          customDutyEntries.push(...found);
+        }
+      }
+
+      // Remove duplicates based on date + amount (ignore account variations)
+      const uniqueCustomDutyEntries = [];
+      const seenCustomDuty = new Set();
+      for (const entry of customDutyEntries) {
+        const key = `${entry.date}|${entry.amount}`;
+        if (!seenCustomDuty.has(key)) {
+          seenCustomDuty.add(key);
+          uniqueCustomDutyEntries.push(entry);
+        }
+      }
+
+      // Always clear context for expense queries and show only Custom Duty results
+      // Note: Cannot reassign const variables, so we'll handle this in the final context assignment
+      
+      if (uniqueCustomDutyEntries.length > 0) {
+        // Calculate total Custom Duty expense
+        const totalCustomDuty = uniqueCustomDutyEntries.reduce((sum, entry) => sum + entry.amount, 0);
+        
+        // Create detailed breakdown
+        const customDutyBreakdown = uniqueCustomDutyEntries
+          .sort((a, b) => new Date(a.date.split('-').reverse().join('-')) - new Date(b.date.split('-').reverse().join('-')))
+          .map(entry => `- ${entry.date}: ₹${entry.amount.toLocaleString('en-IN')}`)
+          .join('\n');
+
+        customDutySummary = `\n\nPRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY:\n- Total Custom Duty entries found: ${uniqueCustomDutyEntries.length}\n- Total Custom Duty expense: ₹${totalCustomDuty.toLocaleString('en-IN')}\n\nDetailed breakdown:\n${customDutyBreakdown}\n\n**IMPORTANT**: For major expense queries, show ONLY Custom Duty expenses. Do not analyze other payment vouchers or general expenses. Focus exclusively on Custom Duty breakdown.\n`;
+        
+        console.log('[CHAT] Precomputed Custom Duty expense:', { entries: uniqueCustomDutyEntries.length, total: totalCustomDuty });
+      } else {
+        customDutySummary = `\n\nPRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY:\n- Total Custom Duty entries found: 0\n- No Custom Duty expenses found for the specified period.\n\n**IMPORTANT**: For major expense queries, show ONLY Custom Duty expenses. Since no Custom Duty entries were found, inform the user that no Custom Duty expenses exist for this period.\n`;
+        
+        console.log('[CHAT] No Custom Duty expenses found for the specified period');
+      }
+    }
+
     // Deterministic precomputation: sales (Sale) for date-specific queries
     let salesSummary = '';
     if (queryType === 'sales' && dateContext && dateContext.isDateSpecific) {
@@ -1607,6 +1771,10 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         finalContext = ''; // Clear the context from chunks
         finalValidationContext = ''; // Clear validation context as well
         console.log('[CHAT] Sales query with precomputed summary. Clearing chunk context to force model focus.');
+    } else if (queryType === 'expense' && customDutySummary && customDutySummary.includes('PRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY')) {
+        finalContext = ''; // Clear the context from chunks
+        finalValidationContext = ''; // Clear validation context as well
+        console.log('[CHAT] Expense query with precomputed Custom Duty summary. Clearing chunk context to force model focus.');
     } else {
         // Fallback to original context logic if no precomputation is done
         if (totalEstimatedTokens > 6000) { // Conservative limit
@@ -1666,7 +1834,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     }
 
     // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + creditNoteSummary + cashBalanceSummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
+    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + creditNoteSummary + cashBalanceSummary + customDutySummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');
