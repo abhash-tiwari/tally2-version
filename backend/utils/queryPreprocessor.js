@@ -175,75 +175,73 @@ function extractDateContext(query) {
   // NEW: detect quarter-based queries
   const quarterPatterns = [
     // Q1, Q2, Q3, Q4 format
-    /\b(q[1-4])\s+(\d{4})\b/i,
-    /\b(\d{4})\s+(q[1-4])\b/i,
+    /\b(q[1-4])\s+(\d{4})\b/gi,
+    /\b(\d{4})\s+(q[1-4])\b/gi,
     // First/Second/Third/Fourth quarter format (with typo support)
-    /\b(first|second|third|fourth)\s+(quarter|quater)\s+(\d{4})\b/i,
-    /\b(\d{4})\s+(first|second|third|fourth)\s+(quarter|quater)\b/i,
+    /\b(first|second|third|fourth)\s+(quarter|quater)\s+(\d{4})\b/gi,
+    /\b(\d{4})\s+(first|second|third|fourth)\s+(quarter|quater)\b/gi,
     // Quarter 1/2/3/4 format (with typo support)
-    /\b(quarter|quater)\s+([1-4])\s+(\d{4})\b/i,
-    /\b(\d{4})\s+(quarter|quater)\s+([1-4])\b/i
+    /\b(quarter|quater)\s+([1-4])\s+(\d{4})\b/gi,
+    /\b(\d{4})\s+(quarter|quater)\s+([1-4])\b/gi
   ];
 
   for (const qp of quarterPatterns) {
-    const m = query.match(qp);
-    if (m) {
-      let quarterNum, year;
-      
-      // Extract quarter number and year from different formats
-      if (m[1] && m[2]) {
-        if (/^q[1-4]$/i.test(m[1])) {
-          // Q1 2023 format
-          quarterNum = parseInt(m[1].slice(1));
-          year = m[2];
-        } else if (/^(first|second|third|fourth)$/i.test(m[1])) {
-          // first quarter 2023 format
-          const quarterMap = { 'first': 1, 'second': 2, 'third': 3, 'fourth': 4 };
-          quarterNum = quarterMap[m[1].toLowerCase()];
-          year = m[3]; // Year is in group 3 for this pattern
-        } else if (/^\d{4}$/.test(m[1])) {
-          // 2023 Q1 format
-          year = m[1];
-          if (/^q[1-4]$/i.test(m[2])) {
-            quarterNum = parseInt(m[2].slice(1));
-          } else if (/^(first|second|third|fourth)$/i.test(m[2])) {
+    const matches = [...query.matchAll(qp)];
+    if (matches.length > 0) {
+      context.hasDateQuery = true;
+      context.isDateSpecific = true;
+      let specificDateRanges = [];
+
+      for (const m of matches) {
+        let quarterNum, year;
+
+        // Extract quarter number and year from different formats
+        if (m[1] && m[2]) {
+          if (/^q[1-4]$/i.test(m[1])) {
+            quarterNum = parseInt(m[1].slice(1));
+            year = m[2];
+          } else if (/^(first|second|third|fourth)$/i.test(m[1])) {
             const quarterMap = { 'first': 1, 'second': 2, 'third': 3, 'fourth': 4 };
-            quarterNum = quarterMap[m[2].toLowerCase()];
-          } else if (/^[1-4]$/.test(m[3])) {
-            // 2023 quarter 1 format
-            quarterNum = parseInt(m[3]);
+            quarterNum = quarterMap[m[1].toLowerCase()];
+            year = m[3];
+          } else if (/^\d{4}$/.test(m[1])) {
+            year = m[1];
+            if (/^q[1-4]$/i.test(m[2])) {
+              quarterNum = parseInt(m[2].slice(1));
+            } else if (/^(first|second|third|fourth)$/i.test(m[2])) {
+              const quarterMap = { 'first': 1, 'second': 2, 'third': 3, 'fourth': 4 };
+              quarterNum = quarterMap[m[2].toLowerCase()];
+            } else if (/^[1-4]$/.test(m[3])) {
+              quarterNum = parseInt(m[3]);
+            }
+          } else if (/^(quarter|quater)$/i.test(m[1])) {
+            quarterNum = parseInt(m[2]);
+            year = m[3];
           }
-        } else if (/^(quarter|quater)$/i.test(m[1])) {
-          // quarter 1 2023 format
-          quarterNum = parseInt(m[2]);
-          year = m[3];
+        }
+
+        if (quarterNum && year) {
+          const quarterMonths = {
+            1: ['jan', 'feb', 'mar'],
+            2: ['apr', 'may', 'jun'],
+            3: ['jul', 'aug', 'sep'],
+            4: ['oct', 'nov', 'dec']
+          };
+          const months = quarterMonths[quarterNum];
+          if (months) {
+            specificDateRanges.push(`Q${quarterNum} ${year}`);
+            context.months.push(...months.map(m => capitalize3(m)));
+            context.years.push(year);
+            context.dateTerms.push(`Q${quarterNum}`, year);
+          }
         }
       }
-      
-      if (quarterNum && year) {
-        // Map quarter to months
-        const quarterMonths = {
-          1: ['jan', 'feb', 'mar'],
-          2: ['apr', 'may', 'jun'],
-          3: ['jul', 'aug', 'sep'],
-          4: ['oct', 'nov', 'dec']
-        };
-        
-        const months = quarterMonths[quarterNum];
-        if (months) {
-          context.hasDateQuery = true;
-          context.isDateSpecific = true;
-          context.specificDateRange = `Q${quarterNum} ${year}`;
-          context.months.push(...months.map(m => capitalize3(m)));
-          context.years.push(year);
-          context.dateTerms.push(`Q${quarterNum}`, year);
-          
-          // Set range for getMonthsInRange compatibility
-          const yy = normalizeToYY(year);
-          context.rangeStart = { mon: months[0], yy: yy };
-          context.rangeEnd = { mon: months[2], yy: yy };
-          break;
-        }
+
+      if (specificDateRanges.length > 0) {
+        context.specificDateRange = specificDateRanges.join(' and ');
+        // Remove duplicate months and years
+        context.months = [...new Set(context.months)];
+        context.years = [...new Set(context.years)];
       }
     }
   }
@@ -521,23 +519,33 @@ QUESTION: ${originalQuery}
 
 STEP-BY-STEP INSTRUCTIONS:
 1. Analyze the question and identify the key requirements
-2. Search the data for relevant entries:
+2. **CRITICAL FOR SALES QUERIES**: If this is a sales query and you see a "PRECOMPUTED SALES SUMMARY" section, USE ONLY that filtered data. DO NOT analyze raw data chunks that may contain negative amounts (returns/credit notes).
+3. **CRITICAL FOR QUARTER COMPARISON QUERIES**: If comparing quarters (e.g., Q1 2023 vs Q1 2024):
+   - The precomputed sales summary contains entries from BOTH years combined
+   - You MUST manually separate entries by year based on the date (e.g., entries with "23" are 2023, entries with "24" are 2024)
+   - Calculate SEPARATE totals for each quarter by adding up amounts for each year
+   - List entries chronologically within each year
+   - Do NOT assign all entries to one year - they span multiple years
+   - NEVER show negative amounts for sales - all sales amounts in the summary are positive
+4. Search the data for relevant entries:
+   - For sales: Use ONLY the precomputed sales summary data (positive amounts only)
    - For loans: Look for bank names, financial institutions, loan accounts
    - For vouchers: Look for lines starting with "Voucher:"
    - For financials: Check both Debit (Dr) and Credit (Cr) columns
-3. If the query is about totals or counts:
+5. If the query is about totals or counts:
    - Show the calculation method
    - List the items being counted/summed
    - Display the final total clearly
    - VERIFY your count by re-counting
-4. For loan queries:
+6. For loan queries:
    - List each loan separately with its details
    - Include the institution, amount, and any relevant dates
    - Calculate and show the total loan amount
-5. If data is insufficient, be specific about what's missing
-6. If no data is found, say "No data available"
-7. BE CONSISTENT: Use the same analysis method for similar queries
-8. VERIFY: Double-check your analysis before providing the final answer
+7. **SALES DATA FILTERING**: Never include negative sales amounts in your analysis. Negative amounts are returns/credit notes, not actual sales.
+8. If data is insufficient, be specific about what's missing
+9. If no data is found, say "No data available"
+10. BE CONSISTENT: Use the same analysis method for similar queries
+11. VERIFY: Double-check your analysis before providing the final answer
 
 FINAL ANSWER:
 - Be specific and include all relevant numbers

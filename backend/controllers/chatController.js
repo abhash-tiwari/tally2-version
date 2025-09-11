@@ -1521,28 +1521,46 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       });
       
       entries = uniquePositiveEntries;
-      
-      // Use original logic for extraction but Python for accurate total calculation
-      let finalTotal = entries.reduce((s, e) => s + (e.amount || 0), 0); // Fallback calculation
-      let pythonCalculationNote = '';
-      
-      try {
-        console.log('[CHAT] Using Python for accurate sales total calculation from', entries.length, 'entries...');
-        const { calculateSalesTotals } = require('../utils/pythonCalculator');
-        const pythonResult = await calculateSalesTotals(entries, dateContext);
-        finalTotal = pythonResult.total_amount;
-        pythonCalculationNote = ' (Python-calculated)';
-        console.log('[CHAT] Python calculation successful:', { originalTotal: entries.reduce((s, e) => s + (e.amount || 0), 0), pythonTotal: finalTotal });
-      } catch (error) {
-        console.error('[CHAT] Python calculation failed, using original total:', error);
-        pythonCalculationNote = ' (Fallback calculation)';
+
+      // Group entries by year based on the date string (e.g., 'DD-Mon-YY')
+      const entriesByYear = entries.reduce((acc, entry) => {
+          const yearSuffix = entry.date.slice(-2);
+          const year = `20${yearSuffix}`;
+          if (!acc[year]) {
+              acc[year] = [];
+          }
+          acc[year].push(entry);
+          return acc;
+      }, {});
+
+      salesSummary = '\n\nPRECOMPUTED SALES SUMMARY (BREAKDOWN BY PERIOD):\n';
+      const { calculateSalesTotals } = require('../utils/pythonCalculator');
+
+      // Calculate total for each year and build the summary string
+      for (const year of Object.keys(entriesByYear).sort()) { // Sort years to ensure order
+          const yearEntries = entriesByYear[year];
+          let yearTotal = 0;
+          let pythonCalculationNote = '';
+
+          try {
+              console.log(`[CHAT] Using Python for accurate sales total calculation for ${year} from ${yearEntries.length} entries...`);
+              const pythonResult = await calculateSalesTotals(yearEntries, null); // Pass null for dateContext as it's not needed for summing a pre-filtered list
+              yearTotal = pythonResult.total_amount;
+              pythonCalculationNote = ' (Python-calculated)';
+              console.log(`[CHAT] Python calculation for ${year} successful:`, { total: yearTotal });
+          } catch (error) {
+              console.error(`[CHAT] Python calculation for ${year} failed, using fallback:`, error);
+              yearTotal = yearEntries.reduce((s, e) => s + (e.amount || 0), 0);
+              pythonCalculationNote = ' (Fallback calculation)';
+          }
+
+          salesSummary += `\n--- DATA FOR Q1 ${year} ---\n`;
+          salesSummary += `- Entries found: ${yearEntries.length}\n`;
+          salesSummary += `- Total sales amount: ₹${yearTotal.toLocaleString('en-IN')}${pythonCalculationNote}\n`;
       }
-      
-      const sample = entries.slice(0, 25)
-        .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
-        .join('\n');
-      salesSummary = `\n\nPRECOMPUTED SALES (SALE) SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total sales amount: ${finalTotal.toLocaleString()}${pythonCalculationNote}\nSample entries:\n${sample}\n`;
-      console.log('[CHAT] Precomputed sales (date-filtered scan):', { count: entries.length, total: finalTotal });
+
+      salesSummary += '\n**IMPORTANT**: Use ONLY this precomputed data. The totals for each period are already calculated for you. Simply present these numbers. Do not recalculate.\n';
+      console.log('[CHAT] Precomputed sales (date-filtered scan with breakdown) generated.');
     }
 
     // Deterministic precomputation: journals (Jrnl) for date-specific queries
@@ -1581,29 +1599,37 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     console.log('[CHAT] Token estimation - Context:', contextLength, 'chars, Validation:', validationLength, 'chars, Question:', questionLength, 'chars');
     console.log('[CHAT] Estimated total tokens:', totalEstimatedTokens);
     
-    // If estimated tokens are too high, make a second-pass tighter condensation
+    // If a deterministic precomputation was successful, we can use a much smaller context
+    // to force the model to rely on the precomputed summary.
     let finalContext, finalValidationContext;
-    if (totalEstimatedTokens > 6000) { // Conservative limit
-      const MAX_TIGHT_CONTEXT_CHARS = 9000;
-      let tight = '';
-      let used = 0;
-      for (let i = 0; i < condensedChunks.length; i += 1) {
-        const chunk = condensedChunks[i];
-        const fileName = chunk.fileName || 'Unknown file';
-        const score = chunk.score ? ` (relevance: ${chunk.score.toFixed(3)})` : '';
-        // Further trim each condensed block
-        const trimmed = (chunk.condensed || '').slice(0, 1200);
-        const piece = `[CHUNK ${i + 1} - From: ${fileName}${score}]\n${trimmed}\n\n`;
-        if ((tight.length + piece.length) > MAX_TIGHT_CONTEXT_CHARS) break;
-        tight += piece;
-        used += 1;
-      }
-      finalContext = tight;
-      finalValidationContext = validationContext;
-      console.log('[CHAT] Tight condensation included', used, 'of', condensedChunks.length, 'matched chunks. Chars:', finalContext.length);
+
+    if (queryType === 'sales' && salesSummary && salesSummary.includes('PRECOMPUTED SALES SUMMARY')) {
+        finalContext = ''; // Clear the context from chunks
+        finalValidationContext = ''; // Clear validation context as well
+        console.log('[CHAT] Sales query with precomputed summary. Clearing chunk context to force model focus.');
     } else {
-      finalContext = context;
-      finalValidationContext = validationContext;
+        // Fallback to original context logic if no precomputation is done
+        if (totalEstimatedTokens > 6000) { // Conservative limit
+            const MAX_TIGHT_CONTEXT_CHARS = 9000;
+            let tight = '';
+            let used = 0;
+            for (let i = 0; i < condensedChunks.length; i += 1) {
+                const chunk = condensedChunks[i];
+                const fileName = chunk.fileName || 'Unknown file';
+                const score = chunk.score ? ` (relevance: ${chunk.score.toFixed(3)})` : '';
+                const trimmed = (chunk.condensed || '').slice(0, 1200);
+                const piece = `[CHUNK ${i + 1} - From: ${fileName}${score}]\n${trimmed}\n\n`;
+                if ((tight.length + piece.length) > MAX_TIGHT_CONTEXT_CHARS) break;
+                tight += piece;
+                used += 1;
+            }
+            finalContext = tight;
+            finalValidationContext = validationContext;
+            console.log('[CHAT] Tight condensation included', used, 'of', condensedChunks.length, 'matched chunks. Chars:', finalContext.length);
+        } else {
+            finalContext = context;
+            finalValidationContext = validationContext;
+        }
     }
 
     // Enhance prompt with query-type-specific instructions
@@ -1611,7 +1637,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     if (queryType === 'loan') {
       extraInstructions = '\nIMPORTANT: Only include transactions where the account or narration contains the word "Loan", "OD", "Bank Loan", "Secured Loan", or "Unsecured Loan". Ignore regular payments, receipts, and expenses. Deduplicate loans by account and counterparty. Do not double-count the same loan.';
     } else if (queryType === 'sales') {
-      extraInstructions = '\nIMPORTANT: Include ONLY vouchers where Type is exactly "Sale". EXCLUDE any "Sales Order" and its variants (e.g., "Sales Or", "Sales Ord.") entirely. Be strict about the date filter (month/year/day as requested).';
+      extraInstructions = '\nCRITICAL: If you see a "PRECOMPUTED SALES SUMMARY" section with breakdown by period, USE ONLY those pre-calculated totals. DO NOT perform any calculations yourself. Simply present the totals that are already provided for each period. The system has already done all calculations for you.';
     } else if (queryType === 'purchase') {
       extraInstructions = '\nIMPORTANT: Include ALL purchase-related entries (purchase, supplier, GRN, material, inventory, stock, goods received). Do not overlook any purchase transactions. Check for variations like "purc", "supplier", "material", "inventory", "stock", "goods received", "GRN".';
     } else if (queryType === 'journal') {
