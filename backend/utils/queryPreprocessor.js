@@ -263,60 +263,120 @@ function extractDateContext(query) {
     context.dateTerms.push(singleMatch[0]);
   }
 
-  // NEW: detect explicit ranges: "from A to B" or "between A and B"
-  const rangePatterns = [
-    // DD-MM-YY format ranges
-    /\bfrom\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+to\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i,
-    /\bbetween\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+and\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i,
-    // Month name format ranges: "from july 2024 to sept 2024"
-    /\bfrom\s+([A-Za-z]{3,})\s+(\d{4})\s+to\s+([A-Za-z]{3,})\s+(\d{4})\b/i,
-    /\bbetween\s+([A-Za-z]{3,})\s+(\d{4})\s+and\s+([A-Za-z]{3,})\s+(\d{4})\b/i
+  // NEW: detect financial year patterns first
+  const fyPatterns = [
+    // FY2022-23, FY 2022-23, fy2022-23
+    /\bfy\s*(\d{4})-?(\d{2})\b/i,
+    // Financial year 2022-23, financial year 2022-2023
+    /\bfinancial\s+year\s+(\d{4})-?(\d{2,4})\b/i,
+    // Date range patterns for FY: 01-04-22 to 31-03-23
+    /\b(\d{1,2})-(\d{1,2})-(\d{2,4})\s+to\s+(\d{1,2})-(\d{1,2})-(\d{2,4})\b/i
   ];
-  for (const rp of rangePatterns) {
-    const m = query.match(rp);
+
+  for (const fyp of fyPatterns) {
+    const m = query.match(fyp);
     if (m) {
-      let start, end, startStr, endStr;
+      let startYear, endYear;
       
-      // Check if this is a month name format range (groups 1,2,3,4)
-      if (m[1] && m[2] && m[3] && m[4] && /^[A-Za-z]{3,}$/.test(m[1])) {
-        // Month name format: "from july 2024 to sept 2024"
-        const startMonth = m[1];
-        const startYear = m[2];
-        const endMonth = m[3];
-        const endYear = m[4];
+      if (m[1] && m[2] && !m[3]) {
+        // FY2022-23 format
+        startYear = m[1];
+        endYear = m[2].length === 2 ? '20' + m[2] : m[2];
         
-        const startMonAbbr = normalizeToMonthAbbrev(startMonth);
-        const endMonAbbr = normalizeToMonthAbbrev(endMonth);
-        const startYY = normalizeToYY(startYear);
-        const endYY = normalizeToYY(endYear);
-        
-        if (startMonAbbr && endMonAbbr && startYY && endYY) {
-          start = { mon: startMonAbbr.toLowerCase(), yy: startYY };
-          end = { mon: endMonAbbr.toLowerCase(), yy: endYY };
-          startStr = `${startMonth} ${startYear}`;
-          endStr = `${endMonth} ${endYear}`;
-        }
-      } else {
-        // DD-MM-YY format: "from 01-07-2024 to 30-09-2024"
-        startStr = m[1];
-        endStr = m[3];
-        start = parseDateddMonYY(startStr);
-        end = parseDateddMonYY(endStr);
-      }
-      
-      if (start && end) {
+        // Financial year runs from April to March
         context.hasDateQuery = true;
         context.isDateSpecific = true;
-        context.specificDateRange = `${startStr} to ${endStr}`;
-        context.rangeStart = start;
-        context.rangeEnd = end;
-        // Populate ALL months in the range, not just start and end
-        const allMonthsInRange = getMonthsInRange(start.mon, end.mon, start.yy, end.yy);
-        const monthsSet = new Set(allMonthsInRange.map(m => m.month));
-        const yearsSet = new Set(allMonthsInRange.map(m => m.year));
-        context.months.push(...Array.from(monthsSet).map(x => capitalize3(x)));
-        context.years.push(...Array.from(yearsSet).map(y => (y.length === 2 ? '20' + y : y)));
+        context.specificDateRange = `FY ${startYear}-${m[2]}`;
+        
+        // Generate all 12 months of the financial year
+        const fyMonths = getMonthsInRange('apr', 'mar', startYear.slice(-2), endYear.slice(-2));
+        context.months = [...new Set(fyMonths.map(m => capitalize3(m.month)))];
+        context.years = [...new Set(fyMonths.map(m => m.year.length === 2 ? '20' + m.year : m.year))];
+        context.dateTerms.push('FY', startYear, endYear);
         break;
+      } else if (m[1] && m[2] && m[3] && m[4] && m[5] && m[6]) {
+        // Date range format: 01-04-22 to 31-03-23
+        const startDay = m[1], startMonth = m[2], startYearRaw = m[3];
+        const endDay = m[4], endMonth = m[5], endYearRaw = m[6];
+        
+        // Convert to proper format
+        const startYY = normalizeToYY(startYearRaw);
+        const endYY = normalizeToYY(endYearRaw);
+        const startMonAbbr = normalizeToMonthAbbrev(startMonth);
+        const endMonAbbr = normalizeToMonthAbbrev(endMonth);
+        
+        if (startMonAbbr && endMonAbbr && startYY && endYY) {
+          context.hasDateQuery = true;
+          context.isDateSpecific = true;
+          context.specificDateRange = `${startDay}-${startMonth}-${startYearRaw} to ${endDay}-${endMonth}-${endYearRaw}`;
+          
+          // Generate all months in the range
+          const rangeMonths = getMonthsInRange(startMonAbbr.toLowerCase(), endMonAbbr.toLowerCase(), startYY, endYY);
+          context.months = [...new Set(rangeMonths.map(m => capitalize3(m.month)))];
+          context.years = [...new Set(rangeMonths.map(m => m.year.length === 2 ? '20' + m.year : m.year))];
+          context.dateTerms.push(startDay, startMonth, startYearRaw, endDay, endMonth, endYearRaw);
+          break;
+        }
+      }
+    }
+  }
+
+  // If no FY pattern matched, try other range patterns
+  if (!context.isDateSpecific) {
+    const rangePatterns = [
+      // DD-MM-YY format ranges
+      /\bfrom\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+to\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i,
+      /\bbetween\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\s+and\s+(\d{1,2}[-\/](\d{1,2}|[A-Za-z]{3,})[-\/]\d{2,4})\b/i,
+      // Month name format ranges: "from july 2024 to sept 2024"
+      /\bfrom\s+([A-Za-z]{3,})\s+(\d{4})\s+to\s+([A-Za-z]{3,})\s+(\d{4})\b/i,
+      /\bbetween\s+([A-Za-z]{3,})\s+(\d{4})\s+and\s+([A-Za-z]{3,})\s+(\d{4})\b/i
+    ];
+    for (const rp of rangePatterns) {
+      const m = query.match(rp);
+      if (m) {
+        let start, end, startStr, endStr;
+        
+        // Check if this is a month name format range (groups 1,2,3,4)
+        if (m[1] && m[2] && m[3] && m[4] && /^[A-Za-z]{3,}$/.test(m[1])) {
+          // Month name format: "from july 2024 to sept 2024"
+          const startMonth = m[1];
+          const startYear = m[2];
+          const endMonth = m[3];
+          const endYear = m[4];
+          
+          const startMonAbbr = normalizeToMonthAbbrev(startMonth);
+          const endMonAbbr = normalizeToMonthAbbrev(endMonth);
+          const startYY = normalizeToYY(startYear);
+          const endYY = normalizeToYY(endYear);
+          
+          if (startMonAbbr && endMonAbbr && startYY && endYY) {
+            start = { mon: startMonAbbr.toLowerCase(), yy: startYY };
+            end = { mon: endMonAbbr.toLowerCase(), yy: endYY };
+            startStr = `${startMonth} ${startYear}`;
+            endStr = `${endMonth} ${endYear}`;
+          }
+        } else {
+          // DD-MM-YY format: "from 01-07-2024 to 30-09-2024"
+          startStr = m[1];
+          endStr = m[3];
+          start = parseDateddMonYY(startStr);
+          end = parseDateddMonYY(endStr);
+        }
+        
+        if (start && end) {
+          context.hasDateQuery = true;
+          context.isDateSpecific = true;
+          context.specificDateRange = `${startStr} to ${endStr}`;
+          context.rangeStart = start;
+          context.rangeEnd = end;
+          // Populate ALL months in the range, not just start and end
+          const allMonthsInRange = getMonthsInRange(start.mon, end.mon, start.yy, end.yy);
+          const monthsSet = new Set(allMonthsInRange.map(m => m.month));
+          const yearsSet = new Set(allMonthsInRange.map(m => m.year));
+          context.months.push(...Array.from(monthsSet).map(x => capitalize3(x)));
+          context.years.push(...Array.from(yearsSet).map(y => (y.length === 2 ? '20' + y : y)));
+          break;
+        }
       }
     }
   }

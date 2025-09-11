@@ -1554,12 +1554,12 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
               pythonCalculationNote = ' (Fallback calculation)';
           }
 
-          salesSummary += `\n--- DATA FOR Q1 ${year} ---\n`;
+          salesSummary += `\n--- DATA FOR FINANCIAL YEAR ${year} ---\n`;
           salesSummary += `- Entries found: ${yearEntries.length}\n`;
           salesSummary += `- Total sales amount: ₹${yearTotal.toLocaleString('en-IN')}${pythonCalculationNote}\n`;
       }
 
-      salesSummary += '\n**IMPORTANT**: Use ONLY this precomputed data. The totals for each period are already calculated for you. Simply present these numbers. Do not recalculate.\n';
+      salesSummary += '\n**IMPORTANT**: Use ONLY this precomputed data. Each year section contains ALL sales data for that portion of the financial year period. The totals are already calculated for you. Simply present these numbers and sum them for the complete total. Do not recalculate.\n';
       console.log('[CHAT] Precomputed sales (date-filtered scan with breakdown) generated.');
     }
 
