@@ -623,7 +623,7 @@ QUESTION: ${originalQuery}
 
 STEP-BY-STEP INSTRUCTIONS:
 1. Analyze the question and identify the key requirements
-2. **CRITICAL FOR EXPENSE QUERIES**: If this is an expense query and you see a "PRECOMPUTED MAJOR EXPENSE SUMMARY" or "PRECOMPUTED CUSTOM DUTY SUMMARY", USE ONLY that precomputed data. DO NOT analyze raw payment vouchers or fabricate company names.
+2. **CRITICAL FOR EXPENSE QUERIES**: If this is an expense query and you see a "PRECOMPUTED MAJOR EXPENSE SUMMARY" or "PRECOMPUTED CUSTOM DUTY SUMMARY", USE ONLY that precomputed data. DO NOT analyze raw payment vouchers or fabricate company names. **IMPORTANT**: If the precomputed summary includes "DETAILED EXPENSE ENTRIES", you MUST list each individual transaction with its date, account name, and amount in chronological order. Do not just show category summaries.
 3. **CRITICAL FOR SALES QUERIES**: If this is a sales query and you see a "PRECOMPUTED SALES SUMMARY" section, USE ONLY that filtered data. DO NOT analyze raw data chunks that may contain negative amounts (returns/credit notes).
 4. **CRITICAL FOR QUARTER COMPARISON QUERIES**: If comparing quarters (e.g., Q1 2023 vs Q1 2024):
    - The precomputed sales summary contains entries from BOTH years combined
@@ -643,6 +643,7 @@ STEP-BY-STEP INSTRUCTIONS:
    - List the items being counted/summed
    - Display the final total clearly
    - VERIFY your count by re-counting
+   - **FOR EXPENSE QUERIES**: Always show individual entries with dates when available in the precomputed summary
 6. For loan queries:
    - List each loan separately with its details
    - Include the institution, amount, and any relevant dates

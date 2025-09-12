@@ -94,7 +94,7 @@ const CUSTOM_DUTY_KEYWORDS = [
   'Penalty Custom', 'customs duty', 'custom duties'
 ];
 
-// Extract major expenses from text content for specific month/year
+// Extract major expenses from text content for specific month/year (only debited amounts)
 function extractMajorExpensesFromText(content, wantedMonthsSet, wantedYearsSet) {
   const results = [];
   if (!content || typeof content !== 'string') return results;
@@ -102,7 +102,7 @@ function extractMajorExpensesFromText(content, wantedMonthsSet, wantedYearsSet) 
   const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
   const lines = content.split(/\r?\n/);
   
-  console.log('[MAJOR_EXPENSE] Processing', lines.length, 'lines for expense detection');
+  console.log('[MAJOR_EXPENSE] Processing', lines.length, 'lines for expense detection (debited amounts only)');
   
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -126,50 +126,53 @@ function extractMajorExpensesFromText(content, wantedMonthsSet, wantedYearsSet) 
     if (wantedMonthsSet.size > 0 && !wantedMonthsSet.has(monthAbbr)) continue;
     if (wantedYearsSet.size > 0 && !wantedYearsSet.has(year)) continue;
     
-    // Parse CSV fields to find account and amount
+    // Parse CSV fields to find account and debit amount
+    // CSV Format: Date,"Account","","VoucherType",Amount1,Amount2,
+    // Negative Amount1 = Debit (expense), Positive Amount2 = Credit
     const fields = line.split(',');
     let account = '';
-    let amount = 0;
+    let debitAmount = 0;
+    let isExpenseDebited = false;
     
-    // Find the expense account name and amount
-    for (let i = 0; i < fields.length; i++) {
-      const field = fields[i].replace(/^"|"$/g, '').trim();
+    // Find the expense account name in field 1 (after date)
+    if (fields.length >= 5) {
+      const accountField = fields[1].replace(/^"|"$/g, '').trim();
       
-      // Check if this field matches any expense keyword
+      // Check if this account matches any expense keyword
       const matchedKeyword = MAJOR_EXPENSE_KEYWORDS.find(keyword => 
-        field.toLowerCase().includes(keyword.toLowerCase())
+        accountField.toLowerCase().includes(keyword.toLowerCase())
       );
       
       if (matchedKeyword) {
-        account = field;
+        account = accountField;
         
-        // Look for amount in subsequent fields
-        for (let j = i + 1; j < fields.length; j++) {
-          const amtField = fields[j].replace(/^"|"$/g, '').trim();
-          if (amtField && amtField.match(/^-?[0-9,.]+$/)) {
-            const amtRaw = amtField.replace(/[,-]/g, '');
-            const parsedAmount = Math.abs(Number(amtRaw));
-            if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
-              amount = parsedAmount;
-              break;
-            }
+        // Check Amount1 field (field 4) for negative value (debit)
+        const amount1Field = fields[4].replace(/^"|"$/g, '').trim();
+        if (amount1Field && amount1Field.match(/^-[0-9,.]+$/)) { // Negative number = debit
+          const amtRaw = amount1Field.replace(/[,-]/g, '').replace('-', '');
+          const parsedAmount = Number(amtRaw);
+          if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
+            debitAmount = parsedAmount;
+            isExpenseDebited = true;
+            console.log('[MAJOR_EXPENSE] Found debited expense:', account, '₹', debitAmount);
           }
         }
-        break;
       }
     }
     
-    if (account && amount > 0) {
+    // Only include expenses that were actually debited (money spent)
+    if (account && debitAmount > 0 && isExpenseDebited) {
       results.push({
         date: currentDate,
         account: account,
-        amount: amount,
+        amount: debitAmount,
+        type: 'debit',
         description: line.trim()
       });
     }
   }
   
-  console.log('[MAJOR_EXPENSE] Found', results.length, 'major expense entries');
+  console.log('[MAJOR_EXPENSE] Found', results.length, 'debited major expense entries');
   return results;
 }
 
@@ -2090,7 +2093,20 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
               .map(([category, data]) => `- ${category}: ₹${data.total.toLocaleString('en-IN')} (${data.entries.length} entries)`)
               .join('\n');
 
-            majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY (Python-calculated):\n- Total major expense entries found: ${uniqueMajorExpenses.length}\n- Total major expenses: ₹${totalMajorExpenses.toLocaleString('en-IN')}\n\nTop expense categories:\n${categoryBreakdown}\n\n**IMPORTANT**: These are major business expenses identified by keyword matching. Analysis focuses on significant cost drivers.\n`;
+            // Create detailed entry list with dates
+            const detailedEntries = uniqueMajorExpenses
+              .sort((a, b) => new Date(a.date) - new Date(b.date))
+              .map(entry => {
+                const formattedDate = new Date(entry.date).toLocaleDateString('en-GB', { 
+                  day: '2-digit', 
+                  month: 'short', 
+                  year: '2-digit' 
+                });
+                return `${formattedDate}: ${entry.account} - ₹${entry.amount.toLocaleString('en-IN')}`;
+              })
+              .join('\n');
+
+            majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY (Python-calculated):\n- Total major expense entries found: ${uniqueMajorExpenses.length}\n- Total major expenses: ₹${totalMajorExpenses.toLocaleString('en-IN')}\n\nTop expense categories:\n${categoryBreakdown}\n\nDETAILED EXPENSE ENTRIES (Date: Account - Amount):\n${detailedEntries}\n\n**IMPORTANT**: These are major business expenses identified by keyword matching. Analysis focuses on significant cost drivers.\n`;
             
             console.log('[CHAT] Precomputed major expenses (Python):', { entries: uniqueMajorExpenses.length, total: totalMajorExpenses });
           } catch (error) {
@@ -2117,6 +2133,19 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
               .map(([category, data]) => `- ${category}: ₹${data.total.toLocaleString('en-IN')} (${data.entries.length} entries)`)
               .join('\n');
 
+            // Create detailed entry list with dates
+            const detailedEntries = uniqueMajorExpenses
+              .sort((a, b) => new Date(a.date) - new Date(b.date))
+              .map(entry => {
+                const formattedDate = new Date(entry.date).toLocaleDateString('en-GB', { 
+                  day: '2-digit', 
+                  month: 'short', 
+                  year: '2-digit' 
+                });
+                return `${formattedDate}: ${entry.account} - ₹${entry.amount.toLocaleString('en-IN')}`;
+              })
+              .join('\n');
+
             // Monthly breakdown if date filtering is applied
             let monthlyBreakdown = '';
             if (dateContext.isDateSpecific && dateContext.months.length > 0) {
@@ -2141,7 +2170,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
               }
             }
 
-            majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY (Enhanced Fallback):\n- Total major expense entries found: ${uniqueMajorExpenses.length}\n- Total major expenses: ₹${totalMajorExpenses.toLocaleString('en-IN')}\n\nTop expense categories:\n${categoryBreakdown}${monthlyBreakdown}\n\n**IMPORTANT**: These are major business expenses identified by keyword matching. Analysis focuses on significant cost drivers.\n`;
+            majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY (Enhanced Fallback):\n- Total major expense entries found: ${uniqueMajorExpenses.length}\n- Total major expenses: ₹${totalMajorExpenses.toLocaleString('en-IN')}\n\nTop expense categories:\n${categoryBreakdown}\n\nDETAILED EXPENSE ENTRIES (Date: Account - Amount):\n${detailedEntries}${monthlyBreakdown}\n\n**IMPORTANT**: These are major business expenses identified by keyword matching. Analysis focuses on significant cost drivers.\n`;
           }
         } else {
           majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY:\n- No major expenses found for the specified period using keyword matching.\n`;
