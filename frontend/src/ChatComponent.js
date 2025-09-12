@@ -44,6 +44,7 @@ const ChatComponent = ({ onClose }) => {
 
     try {
       console.log('[FRONTEND] Sending question:', userMessage);
+      console.log('[FRONTEND] Selected files:', selectedFiles);
       console.log('[FRONTEND] Chat history length:', chatHistory.length);
       
       const res = await fetch('http://localhost:5000/api/chat', {

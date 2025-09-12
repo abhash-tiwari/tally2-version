@@ -12,6 +12,7 @@ function AppContent() {
   const [uploadedFile, setUploadedFile] = useState(null);
   const [showChat, setShowChat] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState('');
+  const [isPLUpload, setIsPLUpload] = useState(false);
   const fileInputRef = useRef();
 
   // Show loading spinner while checking authentication
@@ -43,27 +44,52 @@ function AppContent() {
       return;
     }
     setUploadedFile(file);
-    console.log('[FRONTEND] File selected:', file.name, 'size:', file.size);
-    const formData = new FormData();
-    formData.append('file', file);
+    console.log('[FRONTEND] File selected:', file.name, 'size:', file.size, 'P&L mode:', isPLUpload);
+
     try {
-      console.log('[FRONTEND] Uploading file...');
-      const res = await fetch('http://localhost:5000/api/upload', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formData,
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setUploadSuccess(data.message || 'File uploaded successfully!');
-        setShowChat(true);
-        console.log('[FRONTEND] Upload success:', data.message);
-        console.log('[FRONTEND] File added to user data collection:', data.fileName);
+      if (isPLUpload) {
+        // P&L Upload - send as FormData like TallyData
+        const formData = new FormData();
+        formData.append('file', file);
+        console.log('[FRONTEND] Uploading P&L file...');
+        const res = await fetch('http://localhost:5000/api/pl/upload', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData,
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setUploadSuccess(`P&L file uploaded successfully! Company: ${data.companyName}, Chunks: ${data.chunksUploaded}`);
+          setShowChat(true);
+          console.log('[FRONTEND] P&L Upload success:', data);
+        } else {
+          setUploadError(data.error || 'P&L upload failed.');
+          console.log('[FRONTEND] P&L Upload failed:', data.error);
+        }
       } else {
-        setUploadError(data.error || 'Upload failed.');
-        console.log('[FRONTEND] Upload failed:', data.error);
+        // Regular Tally Data Upload
+        const formData = new FormData();
+        formData.append('file', file);
+        console.log('[FRONTEND] Uploading Tally file...');
+        const res = await fetch('http://localhost:5000/api/upload', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData,
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setUploadSuccess(data.message || 'File uploaded successfully!');
+          setShowChat(true);
+          console.log('[FRONTEND] Upload success:', data.message);
+          console.log('[FRONTEND] File added to user data collection:', data.fileName);
+        } else {
+          setUploadError(data.error || 'Upload failed.');
+          console.log('[FRONTEND] Upload failed:', data.error);
+        }
       }
     } catch (err) {
       setUploadError('Upload failed.');
@@ -96,16 +122,41 @@ function AppContent() {
         
         <div className="upload-container">
           <div className="upload-section">
-            <h2>📁 Upload Tally Data</h2>
+            <h2>📁 Upload Data</h2>
+            
+            {/* Upload Type Toggle */}
+            <div className="upload-type-toggle">
+              <label className="toggle-option">
+                <input
+                  type="radio"
+                  name="uploadType"
+                  checked={!isPLUpload}
+                  onChange={() => setIsPLUpload(false)}
+                  disabled={uploading}
+                />
+                <span className="toggle-label">📊 Tally Data</span>
+              </label>
+              <label className="toggle-option">
+                <input
+                  type="radio"
+                  name="uploadType"
+                  checked={isPLUpload}
+                  onChange={() => setIsPLUpload(true)}
+                  disabled={uploading}
+                />
+                <span className="toggle-label">📈 P&L Statement</span>
+              </label>
+            </div>
+
             <form className="upload-form" onSubmit={handleFileUpload}>
               <input
                 type="file"
-                accept=".xml,.xlsx,.pdf,.zip,.txt"
+                accept={isPLUpload ? ".txt,.csv" : ".xml,.xlsx,.pdf,.zip,.txt"}
                 ref={fileInputRef}
                 disabled={uploading}
               />
               <button type="submit" disabled={uploading} className="primary-btn">
-                {uploading ? 'Uploading...' : 'Upload Tally Data'}
+                {uploading ? 'Uploading...' : isPLUpload ? 'Upload P&L Data' : 'Upload Tally Data'}
               </button>
             </form>
             {uploadedFile && (
@@ -119,7 +170,12 @@ function AppContent() {
               </div>
             )}
             {uploadError && <div className="error">{uploadError}</div>}
-            <p className="file-info">Supported formats: .XML, .TXT, Excel (.xlsx), PDF, ZIP</p>
+            <p className="file-info">
+              {isPLUpload 
+                ? "Supported formats: .TXT, .CSV (P&L statements)" 
+                : "Supported formats: .XML, .TXT, Excel (.xlsx), PDF, ZIP (Tally data)"
+              }
+            </p>
           </div>
         </div>
       </header>

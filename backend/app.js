@@ -6,6 +6,7 @@ const session = require('express-session');
 const passport = require('./config/passport');
 const fileUploadRoutes = require('./routes/fileUpload');
 const chatRoutes = require('./routes/chat');
+const plRoutes = require('./routes/pl');
 const { router: authRoutes } = require('./routes/auth');
 
 const app = express();
@@ -56,6 +57,7 @@ mongoose.connect(process.env.MONGO_URI).then(async () => {
 app.use('/auth', authRoutes);
 app.use('/api/upload', fileUploadRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/pl', plRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

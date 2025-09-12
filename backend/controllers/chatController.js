@@ -1,4 +1,5 @@
 const TallyData = require('../models/TallyData');
+const PLData = require('../models/PLData');
 const { getEmbedding } = require('../utils/embedding');
 const { findMostSimilarChunks, findKeywordMatches } = require('../utils/vectorSearch');
 const { preprocessQuery, extractDateContext, createEnhancedPrompt } = require('../utils/queryPreprocessor');
@@ -11,6 +12,174 @@ const axios = require('axios');
 // Select OpenAI model via env with a safe default
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
 console.log(`Using OpenAI model: ${OPENAI_MODEL}`);
+
+// Specialized P&L Query Handler - Simple approach for P&L data
+async function handlePLQuery(req, res, plFiles, question, chatHistory) {
+  try {
+    console.log('[PL_CHAT] Handling P&L query with', plFiles.length, 'P&L files');
+    
+    // Get all chunks from P&L files (should be 3-4 max)
+    const allPLChunks = [];
+    const fileNames = [];
+    
+    for (const plFile of plFiles) {
+      fileNames.push(plFile.originalFileName);
+      allPLChunks.push({
+        content: plFile.content,
+        companyName: plFile.companyName,
+        fileName: plFile.originalFileName,
+        periodFrom: plFile.periodFrom,
+        periodTo: plFile.periodTo,
+        plType: plFile.plType,
+        category: plFile.category
+      });
+    }
+    
+    console.log('[PL_CHAT] Total P&L chunks:', allPLChunks.length);
+    console.log('[PL_CHAT] Files:', fileNames.join(', '));
+    
+    // Combine all P&L content
+    const combinedPLContent = allPLChunks.map((chunk, index) => 
+      `[P&L CHUNK ${index + 1} - ${chunk.fileName}]\n${chunk.content}\n`
+    ).join('\n');
+    
+    // Create P&L-specific system prompt
+    const plSystemPrompt = {
+      role: 'system',
+      content: `1. Core Persona & Context
+You are an expert Financial Analyst specializing in interpreting financial statements from Indian accounting software, particularly Tally. You are precise, data-driven, and your primary goal is to translate raw P&L data into clear, accurate business intelligence for users in India.
+
+2. CRITICAL RULES & CONSTRAINTS (MUST FOLLOW)
+P&L is NOT a Cash Flow Statement: This is the most important rule. A Profit & Loss statement is based on accrual accounting (revenue when earned, expenses when incurred), not cash movement.
+
+Action: If a user asks for "cash flow," "inflows vs. outflows," or a similar cash-based analysis, you MUST begin your response by clarifying that the P&L statement cannot provide this. Explain the difference clearly and concisely.
+
+DO NOT attempt to create a cash flow summary by relabeling income as "inflows" and expenses as "outflows." This is incorrect.
+
+Recognize Hierarchical Data (No Double-Counting): Tally P&L exports have a specific structure where some accounts are totals/subtotals. CRITICAL RULES:
+
+- If you see "Sales Accounts-Import" with a value, and then "Marble Sales Account" and "Sales Pista" below it, the individual items are COMPONENTS of the total, not additions to it
+- The P&L shows final totals at the bottom (like ₹1,39,35,78,551.83) - this is the ACTUAL total revenue
+- NEVER add parent totals to child accounts - this creates massive double-counting errors
+- When analyzing revenue, identify the main revenue streams but recognize the final total is already calculated
+- Look for the period covered (e.g., "1-Apr-22 to 31-May-25") and clearly state this timeframe
+
+Currency and Formatting: The financial data is in Indian Rupees (INR).
+
+Action: All monetary values in your response MUST be prefixed with the Rupee symbol (₹). Use the Indian numbering system for commas (lakhs and crores), for example: ₹1,75,67,16,68.35.
+
+Identify Non-Cash Expenses: You must correctly identify non-cash items like "Depreciation" and "Provision for Expense."
+
+Action: These items are key examples to use when explaining why a P&L statement is not a cash flow statement. They reduce profit but do not represent an actual cash outflow in the period.
+
+3. Key Analytical Capabilities
+Revenue Analysis: Identify and quantify major sales and income streams.
+
+Expense Breakdown: Categorize and analyze direct vs. indirect expenses. Identify the largest cost drivers.
+
+Profitability Metrics: Calculate and explain Gross Profit, Net Profit, and key profit margins.
+
+Cost Structure Analysis: Interpret the company's spending patterns.
+
+Financial Ratios: Calculate relevant ratios possible from the P&L (e.g., Gross Profit Margin, Net Profit Margin).
+
+4. Response Protocol
+State Limitations First: If a question cannot be answered accurately with the given P&L data (like a cash flow query), begin your response by stating this limitation clearly.
+
+Structure and Clarity: Organize responses with clear headings and bullet points.
+
+Reference the Data: Back up every insight by referencing the specific line item and its value (e.g., "The Net Profit was ₹1,46,85,539.41, as shown...").
+
+Provide Insights, Not Just Data: Explain what the numbers mean for the business's performance.
+
+5. Correct Response Examples
+
+Example 1 - Revenue Question:
+User Query: "What is the total revenue for FY 2023-24?"
+
+Your CORRECT Response:
+"Based on the P&L statement provided, I need to clarify the reporting period first. The data covers 1-Apr-22 to 31-May-25 (over 3 years), not just FY 2023-24.
+
+**Total Revenue for Entire Period (Apr 2022 to May 2025):** ₹1,39,35,78,551.83
+
+**Major Revenue Components:**
+- Sales Accounts-Import: ₹1,37,65,14,093.63 (primary revenue stream)
+- Direct Incomes-Import: ₹1,02,78,503.08
+- Sales Accounts-Export: ₹16,43,749.21
+- Other income streams: ₹1,51,42,205.91
+
+**Important Note:** This P&L covers 37 months, not a single fiscal year. To get FY 2023-24 specific figures, you would need a P&L statement covering only April 2023 to March 2024."
+
+Example 2 - Cash Flow Question:
+User Query: "Summarize cashflow (inflows vs. outflows)"
+
+Your CORRECT Response:
+"A Profit & Loss statement cannot provide cash flow analysis. P&L shows profitability based on accrual accounting (revenue when earned, expenses when incurred), not actual cash movement. It includes non-cash items like Depreciation (₹16,88,840 in this case).
+
+**Profitability Summary for Period (1-Apr-22 to 31-May-25):**
+- **Total Revenue:** ₹1,39,35,78,551.83
+- **Total Expenses:** ₹1,77,59,39,59.84  
+- **Net Profit:** ₹1,46,85,539.41
+
+For actual cash flow analysis, you need a Cash Flow Statement that tracks real cash inflows and outflows."`};
+    
+    // Prepare chat history
+    const historyMessages = Array.isArray(chatHistory)
+      ? chatHistory.slice(-6).map(msg => ({
+          role: msg.role === 'assistant' ? 'assistant' : 'user',
+          content: msg.content
+        }))
+      : [];
+    
+    // Create user prompt with P&L data and question
+    const userPrompt = `**P&L DATA ANALYSIS REQUEST**
+
+**Company:** ${allPLChunks[0]?.companyName || 'Unknown'}
+**Period:** ${allPLChunks[0]?.periodFrom ? new Date(allPLChunks[0].periodFrom).toDateString() : 'Unknown'} to ${allPLChunks[0]?.periodTo ? new Date(allPLChunks[0].periodTo).toDateString() : 'Unknown'}
+**Files:** ${fileNames.join(', ')}
+
+**P&L STATEMENT DATA:**
+${combinedPLContent}
+
+**USER QUESTION:** ${question}
+
+Please analyze the above P&L data and provide a comprehensive response to the user's question.`;
+    
+    const messages = [
+      plSystemPrompt,
+      ...historyMessages,
+      { role: 'user', content: userPrompt }
+    ];
+    
+    console.log('[PL_CHAT] Calling OpenAI with P&L-specific prompt');
+    
+    // Call OpenAI API
+    const openaiRes = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: OPENAI_MODEL,
+        messages,
+        max_tokens: 2000,
+        temperature: 0.2 // Lower temperature for more precise financial analysis
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    const answer = openaiRes.data.choices[0].message.content;
+    console.log('[PL_CHAT] P&L analysis completed, response length:', answer.length);
+    
+    return res.json({ answer });
+    
+  } catch (error) {
+    console.error('[PL_CHAT] Error:', error);
+    return res.status(500).json({ error: 'P&L analysis failed' });
+  }
+}
 
 // Helper: extract purchase entries from CSV-like content for a specific month/year
 function extractPurchasesFromText(content, wantedMonthsSet, wantedYearsSet) {
@@ -651,13 +820,26 @@ function condenseContentByKeywords(content, keywords, options = {}) {
 
 exports.chat = async (req, res) => {
   try {
-    const { question, selectedFiles, chatHistory = [] } = req.body;
+    const { question, selectedFiles, chatHistory } = req.body;
     const userId = req.user.userId;
     
     console.log('[CHAT] Authenticated user:', req.user.email, 'asking:', question);
     console.log('[CHAT] Received question:', question, 'for user:', userId);
     console.log('[CHAT] Selected files:', selectedFiles);
-    console.log('[CHAT] Chat history length:', chatHistory.length);
+    console.log('[CHAT] Chat history length:', chatHistory ? chatHistory.length : 0);
+
+    // Check if P&L files are selected - use simplified P&L handler
+    if (selectedFiles && selectedFiles.length > 0) {
+      const plFiles = await PLData.find({ 
+        userId, 
+        originalFileName: { $in: selectedFiles }
+      });
+      
+      if (plFiles.length > 0) {
+        console.log('[CHAT] P&L files detected, using specialized P&L handler');
+        return await handlePLQuery(req, res, plFiles, question, chatHistory);
+      }
+    }
     if (!question) return res.status(400).json({ error: 'Missing question' });
 
     // Get data for this specific authenticated user only

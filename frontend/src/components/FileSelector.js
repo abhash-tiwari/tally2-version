@@ -26,21 +26,67 @@ const FileSelector = ({ selectedFiles, onFileSelectionChange }) => {
     }
     
     try {
-      const response = await fetch('http://localhost:5000/api/upload', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
+      // Fetch both Tally data and P&L files
+      const [tallyResponse, plResponse] = await Promise.all([
+        fetch('http://localhost:5000/api/upload', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }),
+        fetch('http://localhost:5000/api/pl/files', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        })
+      ]);
       
-      const data = await response.json();
+      const tallyData = await tallyResponse.json();
+      const plData = await plResponse.json();
       
-      if (response.ok) {
-        setFiles(data.files || []);
-        console.log('[FILE_SELECTOR] Loaded', data.files?.length, 'files');
-      } else {
-        setError(data.error || 'Failed to load files');
-        console.error('[FILE_SELECTOR] Error loading files:', data.error);
+      let allFiles = [];
+      
+      // Add Tally files with type indicator
+      if (tallyResponse.ok && tallyData.files) {
+        const tallyFiles = tallyData.files.map(file => ({
+          ...file,
+          fileType: 'tally',
+          displayName: `📊 ${file.fileName}`
+        }));
+        allFiles.push(...tallyFiles);
+      }
+      
+      // Add P&L files with type indicator
+      if (plResponse.ok && plData.files) {
+        console.log('[FILE_SELECTOR] Raw P&L API response:', plData.files);
+        const plFiles = plData.files.map(file => ({
+          ...file,
+          fileId: file._id || file.originalFileName, 
+          fileName: file.originalFileName || file._id, // Use _id as fallback since that's the grouped field
+          fileType: 'pl',
+          displayName: `📈 ${file.originalFileName || file._id || 'Unknown P&L File'}`,
+          companyName: file.companyName,
+          periodFrom: file.periodFrom,
+          periodTo: file.periodTo
+        }));
+        allFiles.push(...plFiles);
+        console.log('[FILE_SELECTOR] P&L files processed:', plFiles.map(f => ({ 
+          fileName: f.fileName, 
+          originalFileName: f.originalFileName, 
+          _id: f._id,
+          displayName: f.displayName 
+        })));
+      }
+      
+      // Sort by upload date (newest first)
+      allFiles.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+      
+      setFiles(allFiles);
+      console.log('[FILE_SELECTOR] Loaded', allFiles.length, 'files (Tally + P&L)');
+      
+      if (!tallyResponse.ok && !plResponse.ok) {
+        setError('Failed to load files');
       }
     } catch (err) {
       setError('Failed to load files');
@@ -176,12 +222,22 @@ const FileSelector = ({ selectedFiles, onFileSelectionChange }) => {
                     />
                     <div className="file-selector-item-content">
                       <div className="file-selector-item-name">
-                        {file.fileName}
+                        {file.displayName || file.fileName}
                       </div>
                       <div className="file-selector-item-details">
-                        <span>{file.totalChunks} chunks</span>
-                        <span>{formatFileSize(file.totalTokens)}</span>
-                        <span>{formatDate(file.uploadedAt)}</span>
+                        {file.fileType === 'pl' ? (
+                          <>
+                            <span>{file.companyName}</span>
+                            <span>{file.totalChunks} chunks</span>
+                            <span>{formatDate(file.uploadedAt)}</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>{file.totalChunks} chunks</span>
+                            <span>{formatFileSize(file.totalTokens)}</span>
+                            <span>{formatDate(file.uploadedAt)}</span>
+                          </>
+                        )}
                       </div>
                     </div>
                   </label>
