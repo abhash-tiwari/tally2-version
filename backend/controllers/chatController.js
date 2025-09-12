@@ -13,6 +13,233 @@ const axios = require('axios');
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
 console.log(`Using OpenAI model: ${OPENAI_MODEL}`);
 
+// Major Expense Keywords - Comprehensive ledger list for expense detection
+const MAJOR_EXPENSE_KEYWORDS = [
+  // Export/Import Related
+  'Agency Charges IGST- EXPORT', 'CFS Charges IGST- EXPORT', 'Endorsement Charges-Export',
+  'Export Ocean Freight', 'Transportation Charges@12% -Export', 'Custom Duty- Rough Marble Blocks',
+  'Agency Charges', 'Agency Charges IGST', 'Bonded Warehouse Charges', 'CFS Charges',
+  'CFS Charges IGST', 'Concor Charges', 'Container Handling Charges', 'Damage Charges',
+  'DESTUFF CHARGES', 'Detention Charges', 'Documentation Charge', 'Documentation Charge @18%',
+  'Endorsement Charges', 'Import Insurance', 'Import Insurance-IGST', 'Ocean Freight',
+  'Ocean Freights', 'Penalty Custom', 'Shipping Line Charges', 'Stamp Duty Without GST',
+  'Storage Charges', 'Transportation Charges', 'Transport Charges',
+  
+  // Direct Expenses
+  'Damage -Marble Block', 'Sawing Charges', 'Scrap', 'Other Brokerage Charges', 'Stock Broker Charges',
+  
+  // Employee Related
+  'Annual Bonus', 'Basic Salary', 'House Rent Allowance', 'Special Allowance', 'Travel Allowance',
+  
+  // Marketing & Gifts
+  'Advertising Expense @5', 'Gift Sample', 'Amit-Keyman', 'Rajesh-Keyman',
+  
+  // Insurance
+  'Insurance Expense', 'Insurance Without GST',
+  
+  // Interest & Loans
+  'Interest on Bank Loan', 'Interest On CC Limit', 'Interest on LC Bill Discounting',
+  'Interest on Secured Loan', 'Interest on Unsecured Loan', 'CPP Shield Expense',
+  'Documentation Charges', 'Other Loan Expenses',
+  
+  // Office Expenses
+  'Office Expenses @18', 'Office Expenses @3%', 'Office Expenses IGST @18',
+  'Office Expenses Without GST', 'Registration Fees',
+  
+  // Professional Fees
+  'Professional Fees for Director', 'Professional Fees for Director @18%',
+  'Professional Fees for Director Nil Rated',
+  
+  // Rent
+  'Rent Expenses', 'Rent- Kanakia Office', 'Rent-Silvassa',
+  
+  // Compliance & Legal
+  'Statutory Compliance', 'Interest on Late Payment', 'CGST Interest',
+  'Interest on Late Payment Adv Tax', 'Interest on Late Payment- TCS',
+  'Interest on Late Payment- TDS', 'SGST Interest', 'Custodial Fees',
+  'GST Paid F.Y 2021-22', 'Issuer Admission Processing Fees', 'Professional Fees',
+  'PT Payment for Directors', 'PT Payment of Company', 'ROC Reimbursement',
+  'Tax Audit Fees',
+  
+  // Travel & Food
+  'Food Expenses Without GST ledgers', 'Hotel Accomodation', 'Hotel Expense',
+  'Travel Expense @12', 'Travel Expense @18', 'Travel Expense @5', 'Travel Expense-Foreign',
+  'Travel Expense IGST 12%', 'Travel Expense IGST 18%', 'Travel Expense IGST 5%',
+  'Travel Expense Without GST', 'Vehicle Expenses@5%', 'Visa Expenses',
+  
+  // Utilities
+  'Electricity Expense', 'Mobile Expenses', 'Telephone Expense', 'Telephone Expenses Without GST',
+  
+  // Miscellaneous
+  'Annual Maintenance Charges', 'Bank Charges Forex', 'Bank Charges with GST',
+  'Bank Charrges Without GST', 'Bill Discounting Charges', 'Business Promotion Exp',
+  'Car Accessories', 'Car Expenses', 'Car Warranty Epired', 'CGSTMSE Fees',
+  'Commission Expenses', 'Commission on Handling', 'Conveyance', 'Courier Expense @18',
+  'Courier Expense Without GST', 'Depreciation', 'Domain Expenses', 'Domian Expense@18%',
+  'Exchange Expense', 'Extended Warranty Expenses', 'FEF Account', 'Finance Cost',
+  'FSSAI Annual Return Filling', 'FSSAI Registration Charges', 'FSSAI Renewal Charges',
+  'Google Workspace', 'HR Consultancy Service', 'Insurance Car', 'Labour Expenses',
+  'Misc. Expenses', 'Office Maintenance Charges', 'Other Expenes',
+  'Outsourcing Consultancy Expenses', 'Parking Charges', 'Printing & Stationery @12',
+  'Printing & Stationery @18', 'Printing & Stationery @5', 'Printing & Stationery Without GST',
+  'Processing Fees @18%', 'Professional Fees-IGST', 'Professional Fees Nil Rated',
+  'Provision for Expense', 'PT Payment for FY 21-22 for Directors', 'Reimbursement Expense',
+  'Repair & Maintenance', 'ROC Filing Fees', 'ROC Filling', 'Round Off', 'Staff Welfare',
+  'Stamp Duty Against Loan', 'Stamp Duty Charges for ROC', 'Write Off Expenses'
+];
+
+// Custom Duty specific keywords for dedicated handling
+const CUSTOM_DUTY_KEYWORDS = [
+  'Custom Duty', 'Indian Customs', 'Customs', 'Custom Duty- Rough Marble Blocks',
+  'Penalty Custom', 'customs duty', 'custom duties'
+];
+
+// Extract major expenses from text content for specific month/year
+function extractMajorExpensesFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  
+  console.log('[MAJOR_EXPENSE] Processing', lines.length, 'lines for expense detection');
+  
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    
+    // Check if line contains any major expense keywords
+    const hasExpenseKeyword = MAJOR_EXPENSE_KEYWORDS.some(keyword => 
+      line.toLowerCase().includes(keyword.toLowerCase())
+    );
+    
+    if (!hasExpenseKeyword) continue;
+    
+    // Extract date from line
+    const dateMatch = dateRegex.exec(line);
+    if (!dateMatch) continue;
+    
+    const currentDate = dateMatch[0];
+    const monthAbbr = dateMatch[2].toLowerCase();
+    const year = dateMatch[3];
+    
+    // Filter by wanted months and years
+    if (wantedMonthsSet.size > 0 && !wantedMonthsSet.has(monthAbbr)) continue;
+    if (wantedYearsSet.size > 0 && !wantedYearsSet.has(year)) continue;
+    
+    // Parse CSV fields to find account and amount
+    const fields = line.split(',');
+    let account = '';
+    let amount = 0;
+    
+    // Find the expense account name and amount
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i].replace(/^"|"$/g, '').trim();
+      
+      // Check if this field matches any expense keyword
+      const matchedKeyword = MAJOR_EXPENSE_KEYWORDS.find(keyword => 
+        field.toLowerCase().includes(keyword.toLowerCase())
+      );
+      
+      if (matchedKeyword) {
+        account = field;
+        
+        // Look for amount in subsequent fields
+        for (let j = i + 1; j < fields.length; j++) {
+          const amtField = fields[j].replace(/^"|"$/g, '').trim();
+          if (amtField && amtField.match(/^-?[0-9,.]+$/)) {
+            const amtRaw = amtField.replace(/[,-]/g, '');
+            const parsedAmount = Math.abs(Number(amtRaw));
+            if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
+              amount = parsedAmount;
+              break;
+            }
+          }
+        }
+        break;
+      }
+    }
+    
+    if (account && amount > 0) {
+      results.push({
+        date: currentDate,
+        account: account,
+        amount: amount,
+        description: line.trim()
+      });
+    }
+  }
+  
+  console.log('[MAJOR_EXPENSE] Found', results.length, 'major expense entries');
+  return results;
+}
+
+// Extract Custom Duty expenses (moved from existing logic)
+function extractCustomDutyFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  
+  console.log('[CUSTOM_DUTY] Processing', lines.length, 'lines for Custom Duty detection');
+  
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    
+    // Check if line contains Custom Duty keywords
+    const hasCustomDutyKeyword = CUSTOM_DUTY_KEYWORDS.some(keyword => 
+      line.toLowerCase().includes(keyword.toLowerCase())
+    );
+    
+    if (!hasCustomDutyKeyword) continue;
+    
+    const dateMatch = dateRegex.exec(line);
+    if (!dateMatch) continue;
+    
+    const currentDate = dateMatch[0];
+    const monthAbbr = dateMatch[2].toLowerCase();
+    const year = dateMatch[3];
+    
+    if (wantedMonthsSet.size > 0 && !wantedMonthsSet.has(monthAbbr)) continue;
+    if (wantedYearsSet.size > 0 && !wantedYearsSet.has(year)) continue;
+    
+    const fields = line.split(',');
+    let account = '';
+    let amount = 0;
+    
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i].replace(/^"|"$/g, '');
+      if (CUSTOM_DUTY_KEYWORDS.some(keyword => field.toLowerCase().includes(keyword.toLowerCase()))) {
+        account = field;
+        for (let j = i + 1; j < fields.length; j++) {
+          const amtField = fields[j].replace(/^"|"$/g, '');
+          if (amtField && amtField.match(/^-?[0-9,.]+$/)) {
+            const amtRaw = amtField.replace(/[,-]/g, '');
+            const parsedAmount = Math.abs(Number(amtRaw));
+            if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
+              amount = parsedAmount;
+              break;
+            }
+          }
+        }
+        break;
+      }
+    }
+    
+    if (account && amount > 0) {
+      results.push({
+        date: currentDate,
+        account: account,
+        amount: amount,
+        description: line.trim()
+      });
+    }
+  }
+  
+  console.log('[CUSTOM_DUTY] Found', results.length, 'Custom Duty entries');
+  return results;
+}
+
 // Specialized P&L Query Handler - Simple approach for P&L data
 async function handlePLQuery(req, res, plFiles, question, chatHistory) {
   try {
@@ -1757,8 +1984,10 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Precomputed cash balance:', { transactions: uniqueCashTransactions.length, receipts: totalReceipts, payments: totalPayments, net: netCashBalance });
     }
 
-    // Deterministic precomputation: Custom Duty expenses for expense queries
+    // Enhanced expense handling: Custom Duty vs Major Expenses detection
     let customDutySummary = '';
+    let majorExpenseSummary = '';
+    
     if (queryType === 'expense' && dateContext && dateContext.isDateSpecific) {
       const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       const wantedMonths = new Set(
@@ -1768,48 +1997,156 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       );
       const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
 
-      let customDutyEntries = [];
-      for (const ch of dateFilteredChunks) {
-        const text = ch.content || (ch._doc && ch._doc.content) || '';
-        const found = extractCustomDutyFromText(text, wantedMonths, wantedYears)
-          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
-        if (found.length) {
-          console.log('[CHAT] Found', found.length, 'Custom Duty entries in chunk from', ch.fileName);
-          customDutyEntries.push(...found);
+      // Check if user specifically asks about Custom Duty
+      const isCustomDutyQuery = question.toLowerCase().includes('custom duty') || 
+                               question.toLowerCase().includes('customs') ||
+                               question.toLowerCase().includes('indian customs');
+
+      if (isCustomDutyQuery) {
+        // Handle Custom Duty specific queries
+        const customDutyEntries = [];
+        for (const ch of dateFilteredChunks) {
+          const text = ch.content || (ch._doc && ch._doc.content) || '';
+          const found = extractCustomDutyFromText(text, wantedMonths, wantedYears)
+            .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+          if (found.length) {
+            console.log('[CHAT] Found', found.length, 'Custom Duty entries in chunk from', ch.fileName);
+            customDutyEntries.push(...found);
+          }
         }
-      }
 
-      // Remove duplicates based on date + amount (ignore account variations)
-      const uniqueCustomDutyEntries = [];
-      const seenCustomDuty = new Set();
-      for (const entry of customDutyEntries) {
-        const key = `${entry.date}|${entry.amount}`;
-        if (!seenCustomDuty.has(key)) {
-          seenCustomDuty.add(key);
-          uniqueCustomDutyEntries.push(entry);
+        // Remove duplicates based on date + amount
+        const uniqueCustomDutyEntries = [];
+        const seenCustomDuty = new Set();
+        for (const entry of customDutyEntries) {
+          const key = `${entry.date}|${entry.amount}`;
+          if (!seenCustomDuty.has(key)) {
+            seenCustomDuty.add(key);
+            uniqueCustomDutyEntries.push(entry);
+          }
         }
-      }
-
-      // Always clear context for expense queries and show only Custom Duty results
-      // Note: Cannot reassign const variables, so we'll handle this in the final context assignment
-      
-      if (uniqueCustomDutyEntries.length > 0) {
-        // Calculate total Custom Duty expense
-        const totalCustomDuty = uniqueCustomDutyEntries.reduce((sum, entry) => sum + entry.amount, 0);
         
-        // Create detailed breakdown
-        const customDutyBreakdown = uniqueCustomDutyEntries
-          .sort((a, b) => new Date(a.date.split('-').reverse().join('-')) - new Date(b.date.split('-').reverse().join('-')))
-          .map(entry => `- ${entry.date}: ₹${entry.amount.toLocaleString('en-IN')}`)
-          .join('\n');
+        if (uniqueCustomDutyEntries.length > 0) {
+          const totalCustomDuty = uniqueCustomDutyEntries.reduce((sum, entry) => sum + entry.amount, 0);
+          const customDutyBreakdown = uniqueCustomDutyEntries
+            .sort((a, b) => new Date(a.date.split('-').reverse().join('-')) - new Date(b.date.split('-').reverse().join('-')))
+            .map(entry => `- ${entry.date}: ₹${entry.amount.toLocaleString('en-IN')}`)
+            .join('\n');
 
-        customDutySummary = `\n\nPRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY:\n- Total Custom Duty entries found: ${uniqueCustomDutyEntries.length}\n- Total Custom Duty expense: ₹${totalCustomDuty.toLocaleString('en-IN')}\n\nDetailed breakdown:\n${customDutyBreakdown}\n\n**IMPORTANT**: For major expense queries, show ONLY Custom Duty expenses. Do not analyze other payment vouchers or general expenses. Focus exclusively on Custom Duty breakdown.\n`;
-        
-        console.log('[CHAT] Precomputed Custom Duty expense:', { entries: uniqueCustomDutyEntries.length, total: totalCustomDuty });
+          customDutySummary = `\n\nPRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY:\n- Total Custom Duty entries found: ${uniqueCustomDutyEntries.length}\n- Total Custom Duty expense: ₹${totalCustomDuty.toLocaleString('en-IN')}\n\nDetailed breakdown:\n${customDutyBreakdown}\n\n**IMPORTANT**: Focus exclusively on Custom Duty breakdown.\n`;
+          console.log('[CHAT] Precomputed Custom Duty expense:', { entries: uniqueCustomDutyEntries.length, total: totalCustomDuty });
+        } else {
+          customDutySummary = `\n\nPRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY:\n- No Custom Duty expenses found for the specified period.\n`;
+          console.log('[CHAT] No Custom Duty expenses found for the specified period');
+        }
       } else {
-        customDutySummary = `\n\nPRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY:\n- Total Custom Duty entries found: 0\n- No Custom Duty expenses found for the specified period.\n\n**IMPORTANT**: For major expense queries, show ONLY Custom Duty expenses. Since no Custom Duty entries were found, inform the user that no Custom Duty expenses exist for this period.\n`;
-        
-        console.log('[CHAT] No Custom Duty expenses found for the specified period');
+        // Handle Major Expenses queries using keyword matching
+        const majorExpenseEntries = [];
+        for (const ch of dateFilteredChunks) {
+          const text = ch.content || (ch._doc && ch._doc.content) || '';
+          const found = extractMajorExpensesFromText(text, wantedMonths, wantedYears)
+            .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+          if (found.length) {
+            console.log('[CHAT] Found', found.length, 'major expense entries in chunk from', ch.fileName);
+            majorExpenseEntries.push(...found);
+          }
+        }
+
+        // Remove duplicates and prepare for Python calculation
+        const uniqueMajorExpenses = [];
+        const seenMajorExpense = new Set();
+        for (const entry of majorExpenseEntries) {
+          const key = `${entry.date}|${entry.account}|${entry.amount}`;
+          if (!seenMajorExpense.has(key)) {
+            seenMajorExpense.add(key);
+            uniqueMajorExpenses.push(entry);
+          }
+        }
+
+        if (uniqueMajorExpenses.length > 0) {
+          console.log('[CHAT] Using Python for accurate major expense calculation from', uniqueMajorExpenses.length, 'entries...');
+          
+          try {
+            // Use Python calculation for precise totals
+            const { calculateExpenseTotals } = require('../utils/pythonCalculator');
+            const pythonResult = await calculateExpenseTotals(uniqueMajorExpenses, dateContext);
+            const totalMajorExpenses = pythonResult.total_amount;
+            
+            // Group by expense category for better analysis
+            const expensesByCategory = uniqueMajorExpenses.reduce((acc, entry) => {
+              const category = entry.account;
+              if (!acc[category]) {
+                acc[category] = { entries: [], total: 0 };
+              }
+              acc[category].entries.push(entry);
+              acc[category].total += entry.amount;
+              return acc;
+            }, {});
+
+            // Create detailed breakdown
+            const categoryBreakdown = Object.entries(expensesByCategory)
+              .sort(([,a], [,b]) => b.total - a.total)
+              .slice(0, 10) // Top 10 categories
+              .map(([category, data]) => `- ${category}: ₹${data.total.toLocaleString('en-IN')} (${data.entries.length} entries)`)
+              .join('\n');
+
+            majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY (Python-calculated):\n- Total major expense entries found: ${uniqueMajorExpenses.length}\n- Total major expenses: ₹${totalMajorExpenses.toLocaleString('en-IN')}\n\nTop expense categories:\n${categoryBreakdown}\n\n**IMPORTANT**: These are major business expenses identified by keyword matching. Analysis focuses on significant cost drivers.\n`;
+            
+            console.log('[CHAT] Precomputed major expenses (Python):', { entries: uniqueMajorExpenses.length, total: totalMajorExpenses });
+          } catch (error) {
+            console.error('[CHAT] Python calculation failed, using fallback:', error);
+            
+            // Enhanced fallback calculation with detailed breakdown
+            const totalMajorExpenses = uniqueMajorExpenses.reduce((sum, entry) => sum + entry.amount, 0);
+            
+            // Group by expense category for better analysis
+            const expensesByCategory = uniqueMajorExpenses.reduce((acc, entry) => {
+              const category = entry.account;
+              if (!acc[category]) {
+                acc[category] = { entries: [], total: 0 };
+              }
+              acc[category].entries.push(entry);
+              acc[category].total += entry.amount;
+              return acc;
+            }, {});
+
+            // Create detailed breakdown
+            const categoryBreakdown = Object.entries(expensesByCategory)
+              .sort(([,a], [,b]) => b.total - a.total)
+              .slice(0, 10) // Top 10 categories
+              .map(([category, data]) => `- ${category}: ₹${data.total.toLocaleString('en-IN')} (${data.entries.length} entries)`)
+              .join('\n');
+
+            // Monthly breakdown if date filtering is applied
+            let monthlyBreakdown = '';
+            if (dateContext.isDateSpecific && dateContext.months.length > 0) {
+              const monthlyData = uniqueMajorExpenses.reduce((acc, entry) => {
+                const entryDate = new Date(entry.date);
+                const monthKey = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, '0')}`;
+                if (!acc[monthKey]) {
+                  acc[monthKey] = { total: 0, count: 0 };
+                }
+                acc[monthKey].total += entry.amount;
+                acc[monthKey].count += 1;
+                return acc;
+              }, {});
+
+              const monthlyList = Object.entries(monthlyData)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([month, data]) => `- ${month}: ₹${data.total.toLocaleString('en-IN')} (${data.count} entries)`)
+                .join('\n');
+
+              if (monthlyList) {
+                monthlyBreakdown = `\n\nMonthly breakdown:\n${monthlyList}`;
+              }
+            }
+
+            majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY (Enhanced Fallback):\n- Total major expense entries found: ${uniqueMajorExpenses.length}\n- Total major expenses: ₹${totalMajorExpenses.toLocaleString('en-IN')}\n\nTop expense categories:\n${categoryBreakdown}${monthlyBreakdown}\n\n**IMPORTANT**: These are major business expenses identified by keyword matching. Analysis focuses on significant cost drivers.\n`;
+          }
+        } else {
+          majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY:\n- No major expenses found for the specified period using keyword matching.\n`;
+          console.log('[CHAT] No major expenses found for the specified period');
+        }
       }
     }
 
@@ -1953,10 +2290,10 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         finalContext = ''; // Clear the context from chunks
         finalValidationContext = ''; // Clear validation context as well
         console.log('[CHAT] Sales query with precomputed summary. Clearing chunk context to force model focus.');
-    } else if (queryType === 'expense' && customDutySummary && customDutySummary.includes('PRECOMPUTED CUSTOM DUTY EXPENSE SUMMARY')) {
+    } else if (queryType === 'expense' && (customDutySummary || majorExpenseSummary)) {
         finalContext = ''; // Clear the context from chunks
         finalValidationContext = ''; // Clear validation context as well
-        console.log('[CHAT] Expense query with precomputed Custom Duty summary. Clearing chunk context to force model focus.');
+        console.log('[CHAT] Expense query with precomputed summary. Clearing chunk context to force model focus.');
     } else {
         // Fallback to original context logic if no precomputation is done
         if (totalEstimatedTokens > 6000) { // Conservative limit
@@ -1993,7 +2330,13 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     } else if (queryType === 'journal') {
       extraInstructions = '\nIMPORTANT: Include ONLY journal (Jrnl) vouchers. Report both debit (negative) and credit (positive) amounts. If a specific date is requested (e.g., 1-May-24), list all Jrnl entries on that date. Do not include purchases, sales, receipts.';
     } else if (queryType === 'expense') {
-      extraInstructions = '\nIMPORTANT: Only include entries with "Expense" or related terms in the account or narration. Ignore purchases, sales, and receipts.';
+      if (customDutySummary) {
+        extraInstructions = '\nCRITICAL: Use the PRECOMPUTED CUSTOM DUTY SUMMARY provided. This contains all Custom Duty expenses already calculated. Present the totals and breakdown from this summary. Do not perform additional calculations.';
+      } else if (majorExpenseSummary) {
+        extraInstructions = '\nCRITICAL: Use the PRECOMPUTED MAJOR EXPENSE SUMMARY provided. This contains all major expenses already calculated with precise totals. Present the breakdown and totals from this summary. Do not perform additional calculations.';
+      } else {
+        extraInstructions = '\nIMPORTANT: Only include entries with "Expense" or related terms in the account or narration. Ignore purchases, sales, and receipts.';
+      }
     } else if (queryType === 'receipt') {
       extraInstructions = '\nIMPORTANT: Only include entries with "Receipt" or "Rcpt" in the account or narration. Ignore unrelated transactions.';
     } else if (queryType === 'payment') {
@@ -2015,8 +2358,19 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       }
     }
 
-    // Create enhanced prompt with better date handling and multi-file context
-    const enhancedPrompt = createEnhancedPrompt((question + extraInstructions + interestEntriesSummary + purchaseSummary + salesSummary + creditNoteSummary + cashBalanceSummary + customDutySummary + journalSummary + paymentSummary + profitSummary), (finalContext + finalValidationContext), dateContext);
+    // Build enhanced prompt with precomputed data
+    const enhancedPrompt = createEnhancedPrompt(
+      question,
+      finalContext,
+      finalValidationContext,
+      salesSummary,
+      customDutySummary || majorExpenseSummary,
+      journalSummary,
+      cashBalanceSummary,
+      queryType,
+      dateContext
+    );
+
     const multiFilePrompt = `You are analyzing data from ${totalFiles} uploaded file(s): ${userTallyData.map(d => d.originalFileName).join(', ')}.\n\n${enhancedPrompt}`;
     
     console.log('[CHAT] Enhanced prompt created with multi-file context for', totalFiles, 'files.');

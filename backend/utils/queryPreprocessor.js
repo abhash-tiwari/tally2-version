@@ -424,10 +424,16 @@ function capitalize3(s) {
  * Creates an enhanced prompt with better date context
  * @param {string} originalQuery - Original user query
  * @param {string} context - Data context from vector search
+ * @param {string} validationContext - Validation context
+ * @param {string} salesSummary - Precomputed sales summary
+ * @param {string} expenseSummary - Precomputed expense summary (major expenses or custom duty)
+ * @param {string} journalSummary - Precomputed journal summary
+ * @param {string} cashBalanceSummary - Precomputed cash balance summary
+ * @param {string} queryType - Type of query (sales, expense, etc.)
  * @param {object} dateContext - Date context information
  * @returns {string} - Enhanced prompt for AI
  */
-function createEnhancedPrompt(originalQuery, context, dateContext) {
+function createEnhancedPrompt(originalQuery, context, validationContext, salesSummary, expenseSummary, journalSummary, cashBalanceSummary, queryType, dateContext) {
   const isVoucherQuery = /voucher|transaction|entry|sale|purchase|receipt|payment|credit note|debit note/i.test(originalQuery);
   const isCountQuery = /how many|count of|number of|total (?:vouchers|transactions)/i.test(originalQuery);
   const isLoanQuery = /loan|borrowing|debt|credit facility|financial institution|bank/i.test(originalQuery);
@@ -510,16 +516,33 @@ CASH BALANCE LISTING REQUIREMENTS:
   }
 
   if (/major expense|biggest expense|largest expense|top expense|expense|expenditure|outflow|payment/i.test(originalQuery)) {
-    prompt += `
+    if (expenseSummary && expenseSummary.includes('PRECOMPUTED')) {
+      prompt += `
+CRITICAL EXPENSE ANALYSIS INSTRUCTIONS:
+1. **USE ONLY THE PRECOMPUTED EXPENSE SUMMARY PROVIDED** - Do not analyze raw data chunks
+2. The precomputed summary contains accurate calculations from Python microservice
+3. Present the total amount and category breakdown exactly as provided in the summary
+4. List the top expense categories with their amounts and entry counts
+5. Include monthly breakdown if provided in the summary
+6. Format amounts in Indian Rupees with proper comma notation (₹XX,XX,XXX)
+7. **DO NOT** perform additional calculations or search for payment vouchers
+8. **DO NOT** fabricate company names or amounts not in the precomputed data
+9. Focus on the keyword-matched major expenses, not general payment vouchers
+10. Explain that these are major business expenses identified through keyword matching
+`;
+    } else {
+      prompt += `
 MAJOR EXPENSE IDENTIFICATION REQUIREMENTS:
 1. Find ALL lines with "Pymt" (Payment vouchers) in the data
 2. Extract the amount from each payment line
 3. Convert amounts to positive and sort by size (largest first)
-6. Show the TOP 5-10 largest payment amounts regardless of account name
-7. Format: "Company Name - ₹Amount (Date)"
-8. Ignore small amounts under ₹1 lakh when there are crore-level payments
-10. CRITICAL: Focus on the AMOUNT field after "Pymt", not the account name
+4. Show the TOP 5-10 largest payment amounts regardless of account name
+5. Format: "Company Name - ₹Amount (Date)"
+6. Ignore small amounts under ₹1 lakh when there are crore-level payments
+7. CRITICAL: Focus on the AMOUNT field after "Pymt", not the account name
+8. Only use data explicitly present - do not fabricate company names
 `;
+    }
   }
 
   // Add specific instructions for loan-related queries
@@ -571,16 +594,38 @@ STRICT DATE FILTERING INSTRUCTIONS:
     }
   }
 
+  // Add precomputed summaries to the prompt
+  let precomputedData = '';
+  if (salesSummary) {
+    precomputedData += salesSummary;
+  }
+  if (expenseSummary) {
+    precomputedData += expenseSummary;
+  }
+  if (journalSummary) {
+    precomputedData += journalSummary;
+  }
+  if (cashBalanceSummary) {
+    precomputedData += cashBalanceSummary;
+  }
+
   prompt += `
+PRECOMPUTED SUMMARIES (USE THESE FIRST):
+${precomputedData}
+
 AVAILABLE DATA (from multiple files/chunks):
 ${context}
+
+VALIDATION CONTEXT:
+${validationContext || ''}
 
 QUESTION: ${originalQuery}
 
 STEP-BY-STEP INSTRUCTIONS:
 1. Analyze the question and identify the key requirements
-2. **CRITICAL FOR SALES QUERIES**: If this is a sales query and you see a "PRECOMPUTED SALES SUMMARY" section, USE ONLY that filtered data. DO NOT analyze raw data chunks that may contain negative amounts (returns/credit notes).
-3. **CRITICAL FOR QUARTER COMPARISON QUERIES**: If comparing quarters (e.g., Q1 2023 vs Q1 2024):
+2. **CRITICAL FOR EXPENSE QUERIES**: If this is an expense query and you see a "PRECOMPUTED MAJOR EXPENSE SUMMARY" or "PRECOMPUTED CUSTOM DUTY SUMMARY", USE ONLY that precomputed data. DO NOT analyze raw payment vouchers or fabricate company names.
+3. **CRITICAL FOR SALES QUERIES**: If this is a sales query and you see a "PRECOMPUTED SALES SUMMARY" section, USE ONLY that filtered data. DO NOT analyze raw data chunks that may contain negative amounts (returns/credit notes).
+4. **CRITICAL FOR QUARTER COMPARISON QUERIES**: If comparing quarters (e.g., Q1 2023 vs Q1 2024):
    - The precomputed sales summary contains entries from BOTH years combined
    - You MUST manually separate entries by year based on the date (e.g., entries with "23" are 2023, entries with "24" are 2024)
    - Calculate SEPARATE totals for each quarter by adding up amounts for each year
@@ -588,6 +633,7 @@ STEP-BY-STEP INSTRUCTIONS:
    - Do NOT assign all entries to one year - they span multiple years
    - NEVER show negative amounts for sales - all sales amounts in the summary are positive
 4. Search the data for relevant entries:
+   - For expenses: Use ONLY the precomputed expense summary data (do not analyze raw payment vouchers)
    - For sales: Use ONLY the precomputed sales summary data (positive amounts only)
    - For loans: Look for bank names, financial institutions, loan accounts
    - For vouchers: Look for lines starting with "Voucher:"

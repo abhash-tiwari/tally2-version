@@ -107,6 +107,37 @@ async function calculateProfitLoss(revenueData, expenseData, dateContext = {}) {
 }
 
 /**
+ * Calculate expense totals using Python microservice
+ * @param {Array} expenseData - Array of expense entries with date, account, amount
+ * @param {object} dateContext - Date filtering context
+ * @returns {Promise<object>} - Accurate expense calculations
+ */
+async function calculateExpenseTotals(expenseData, dateContext = {}) {
+  try {
+    console.log('[PYTHON_CALC] Sending expense data to Python microservice');
+    console.log('[PYTHON_CALC] Expense entries count:', expenseData.length);
+    
+    const inputData = {
+      expense_data: expenseData,
+      date_context: dateContext
+    };
+    
+    const result = await callPythonService('/calculate/expenses', inputData);
+    
+    console.log('[PYTHON_CALC] Python expense calculation completed:', {
+      total_amount: result.total_amount,
+      expense_count: result.expense_count,
+      categories: result.categories
+    });
+    
+    return result;
+  } catch (error) {
+    console.error('[PYTHON_CALC] Expense calculation failed:', error);
+    throw error;
+  }
+}
+
+/**
  * Check if Python microservice is healthy
  * @returns {Promise<object>} - Health status
  */
@@ -124,6 +155,7 @@ async function checkPythonServiceHealth() {
 module.exports = {
   calculateSalesTotals,
   calculateProfitLoss,
+  calculateExpenseTotals,
   checkPythonServiceHealth,
   callPythonService
 };

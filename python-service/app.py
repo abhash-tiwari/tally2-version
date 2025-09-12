@@ -226,6 +226,81 @@ def calculate_profit():
         print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
+@app.route('/calculate/expenses', methods=['POST'])
+def calculate_expenses():
+    """Calculate expense totals with high precision"""
+    try:
+        data = request.get_json()
+        expense_data = data.get('expense_data', [])
+        date_context = data.get('date_context', {})
+        
+        if not expense_data:
+            return jsonify({
+                'total_amount': 0,
+                'expense_count': 0,
+                'categories': {},
+                'date_range': 'No data'
+            })
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(expense_data)
+        
+        # Ensure amount is numeric
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+        
+        # Filter by date context
+        df = filter_by_date_context(df, date_context)
+        
+        # Calculate totals
+        total_amount = df['amount'].sum()
+        expense_count = len(df)
+        
+        # Category breakdown (group by account)
+        categories = {}
+        if 'account' in df.columns and not df.empty:
+            category_group = df.groupby('account')['amount'].agg(['sum', 'count']).sort_values('sum', ascending=False)
+            categories = {
+                str(account): {
+                    'total': float(amounts['sum']),
+                    'count': int(amounts['count'])
+                }
+                for account, amounts in category_group.iterrows()
+            }
+        
+        # Date range
+        df['parsed_date'] = df['date'].apply(parse_date)
+        df_with_dates = df.dropna(subset=['parsed_date'])
+        
+        date_range = 'No dates'
+        if not df_with_dates.empty:
+            min_date = df_with_dates['parsed_date'].min()
+            max_date = df_with_dates['parsed_date'].max()
+            date_range = f"{min_date.strftime('%d-%b-%y')} to {max_date.strftime('%d-%b-%y')}"
+        
+        # Monthly breakdown
+        monthly_breakdown = {}
+        if not df_with_dates.empty:
+            monthly_group = df_with_dates.groupby(df_with_dates['parsed_date'].dt.to_period('M'))
+            for period, group in monthly_group:
+                month_key = str(period)
+                monthly_breakdown[month_key] = {
+                    'amount': float(group['amount'].sum()),
+                    'count': len(group)
+                }
+        
+        return jsonify({
+            'total_amount': float(total_amount),
+            'expense_count': int(expense_count),
+            'categories': categories,
+            'monthly_breakdown': monthly_breakdown,
+            'date_range': date_range
+        })
+        
+    except Exception as e:
+        print(f"Error in expense calculation: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
