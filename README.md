@@ -77,6 +77,7 @@ tally-2version/
 
 
 graph TD
+
     A[User Query Input] --> B[Frontend: ChatComponent.js]
     B --> C[POST /api/chat]
     C --> D[Backend Route: chat.js]
