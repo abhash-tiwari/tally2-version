@@ -75,7 +75,7 @@ tally-2version/
 
 ## 🔄 Query Execution Flow Diagram
 
-```mermaid
+
 graph TD
     A[User Query Input] --> B[Frontend: ChatComponent.js]
     B --> C[POST /api/chat]
@@ -154,7 +154,8 @@ graph TD
     style P fill:#f1f8e9
     style Q fill:#fce4ec
     style S fill:#e1f5fe
-```
+
+![Diagram](./frontend/public/TallyGPT%20Diagram.png)
 
 ## 📊 Detailed Query Execution Flow
 
