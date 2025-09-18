@@ -9,10 +9,12 @@ A comprehensive AI-powered financial analysis platform that processes Tally ERP 
 │   Frontend      │    │   Backend       │    │ Python Service  │
 │   (React)       │◄──►│   (Node.js)     │◄──►│   (Flask)       │
 │                 │    │                 │    │                 │
-│ • File Upload   │    │ • Vector Search │    │ • Calculations  │
-│ • Chat Interface│    │ • AI Processing │    │ • Data Analysis │
-│ • Auth System   │    │ • Data Storage  │    │ • Aggregations  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+│ • File Upload   │    │ • Vector Search │    │ • Sales Calc    │
+│ • Chat Interface│    │ • AI Processing │    │ • Profit Calc   │
+│ • Auth System   │    │ • Data Storage  │    │ • Pandas Math   │
+└─────────────────┘    │ • Data Analysis │    └─────────────────┘
+                       │ • Aggregation   │    
+                       └─────────────────┘    
                               │
                               ▼
                     ┌─────────────────┐
