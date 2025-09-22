@@ -1510,7 +1510,17 @@ Provide a clear, professional response about the FY profit figures. Focus only o
           }
           
           if (chunkSalesCount > 0) {
-            console.log('[CHAT] Found', chunkSalesCount, 'FY sales entries in chunk from', chunk.fileName || 'Unknown file');
+            // Get month breakdown for this chunk
+            const chunkMonths = {};
+            for (const entry of salesEntries.slice(-chunkSalesCount)) {
+              const monthMatch = entry.date.match(/-([A-Za-z]{3})-/);
+              if (monthMatch) {
+                const month = monthMatch[1];
+                chunkMonths[month] = (chunkMonths[month] || 0) + 1;
+              }
+            }
+            const monthDetails = Object.entries(chunkMonths).map(([month, count]) => `${month}:${count}`).join(', ');
+            console.log('[CHAT] Found', chunkSalesCount, 'FY sales entries in chunk from', chunk.fileName || 'Unknown file', '(Months:', monthDetails + ')');
           }
         }
         
@@ -1527,72 +1537,123 @@ Provide a clear, professional response about the FY profit figures. Focus only o
           }
         }
         
+        // Sort by date
         uniqueEntries.sort((a, b) => a.sortDate - b.sortDate);
         
-        if (uniqueEntries.length > 0) {
-          const totalSales = uniqueEntries.reduce((sum, entry) => sum + entry.amount, 0);
-          
-          const salesSummary = `\n\n=== OFFICIAL FY SALES (${startYear}-${fyMatch[2]}) ===\n` +
-            `TOTAL SALES: ₹${totalSales.toLocaleString()}\n\n` +
-            `SALES ENTRIES FOUND (${uniqueEntries.length} entries):\n` +
-            uniqueEntries.map(e => `- ${e.date}: ${e.account} = ₹${e.amount.toLocaleString()}`).join('\n') +
-            `\n\nNOTE: This is the complete FY sales data:\n` +
-            `• Date Range: April ${startYear} to March ${endYear}\n` +
-            `• OPTIMIZED: Filtered only FY-specific sales entries\n` +
-            `• Matches standard FY accounting period\n` +
-            `=== END FY SALES ===\n`;
-          
-          console.log('[CHAT] Returning official FY Sales (OPTIMIZED):', { 
-            totalSales, 
-            entriesFound: uniqueEntries.length,
-            fyPeriod: `${startYear}-${fyMatch[2]}`,
-            optimization: 'Used FY-specific date filtering'
-          });
-          
-          // Generate AI response with FY sales context
-          const aiPrompt = `You are a financial analyst. The user asked: "${question}"
-
-Here is the official FY sales data found:
-${salesSummary}
-
-Provide a clear, professional response about the FY sales figures. Focus only on the official sales entries provided. Do not fabricate or estimate any additional data.`;
-          
-          try {
-            const openaiResponse = await axios.post(
-              'https://api.openai.com/v1/chat/completions',
-              {
-                model: process.env.OPENAI_MODEL || 'gpt-4o',
-                messages: [{ role: 'user', content: aiPrompt }],
-                max_tokens: 1500,
-                temperature: 0.2
-              },
-              {
-                headers: {
-                  'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                  'Content-Type': 'application/json'
-                }
-              }
-            );
-            
-            const aiAnswer = openaiResponse.data.choices[0].message.content || salesSummary;
-            console.log('[CHAT] AI response generated for FY Sales entries');
-            return res.json({ answer: aiAnswer });
-          } catch (error) {
-            console.error('[CHAT] OpenAI API error for FY Sales entries:', error);
-            return res.json({ answer: salesSummary });
+        // Calculate total and month-wise breakdown
+        const totalSales = uniqueEntries.reduce((sum, entry) => sum + entry.amount, 0);
+        const monthWiseBreakdown = {};
+        
+        for (const entry of uniqueEntries) {
+          const monthMatch = entry.date.match(/-([A-Za-z]{3})-/);
+          if (monthMatch) {
+            const month = monthMatch[1];
+            if (!monthWiseBreakdown[month]) {
+              monthWiseBreakdown[month] = { count: 0, total: 0 };
+            }
+            monthWiseBreakdown[month].count++;
+            monthWiseBreakdown[month].total += entry.amount;
           }
-        } else {
-          console.log('[CHAT] No FY sales entries found for period:', startYear + '-' + fyMatch[2]);
+        }
+        
+        console.log('[CHAT] Month-wise FY sales breakdown:', monthWiseBreakdown);
+        console.log('[CHAT] Returning official FY Sales (OPTIMIZED):', {
+          totalSales,
+          entriesFound: uniqueEntries.length,
+          fyPeriod: startYear + '-' + fyMatch[2],
+          optimization: 'Used FY-specific date filtering'
+        });
+        
+        // Create detailed voucher listing for AI response
+        const voucherListing = uniqueEntries.map(entry => 
+          `${entry.date}: ${entry.account} - ₹${entry.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        ).join('\n');
+        
+        const monthWiseSummary = Object.entries(monthWiseBreakdown)
+          .map(([month, data]) => `${month}: ${data.count} entries, ₹${data.total.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+          .join('\n');
+        
+        // Generate AI response with OpenAI
+        const prompt = `You are a financial analyst reviewing official Tally sales data for FY ${startYear}-${fyMatch[2]}.
+
+OFFICIAL SALES SUMMARY:
+- Total Sales: ₹${totalSales.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Number of Sales Entries: ${uniqueEntries.length}
+- Financial Year Period: April ${startYear} to March ${endYear}
+- Data Source: Official Tally accounting records
+
+MONTH-WISE BREAKDOWN:
+${monthWiseSummary}
+
+COMPLETE VOUCHER LISTING (Chronological Order):
+${voucherListing}
+
+This data represents verified sales transactions extracted from the company's official accounting system for the specified financial year period.
+
+Provide a comprehensive analysis including:
+1. Total sales amount and number of entries
+2. Month-wise performance highlights
+3. Complete chronological listing of all sales vouchers
+4. Professional summary of the FY performance
+
+Format the response professionally with proper Indian currency formatting and clear section headings.`;
+
+        try {
+          const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+            model: process.env.OPENAI_MODEL || 'gpt-4o',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.2
+          }, {
+            headers: {
+              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          });
+
+          console.log('[CHAT] AI response generated for FY Sales entries with complete voucher listing');
+          return res.json({
+            response: response.data.choices[0].message.content,
+            metadata: {
+              totalSales,
+              entriesFound: uniqueEntries.length,
+              fyPeriod: startYear + '-' + fyMatch[2],
+              queryType: 'fy_sales',
+              optimization: 'FY-specific filtering applied',
+              monthWiseBreakdown
+            }
+          });
+        } catch (error) {
+          console.error('[CHAT] OpenAI API error:', error.message);
+          
+          // Fallback response with complete details
+          const fallbackResponse = `# FY ${startYear}-${fyMatch[2]} Sales Analysis
+
+## Summary
+Total sales for FY ${startYear}-${fyMatch[2]}: **₹${totalSales.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}**
+Number of sales entries: **${uniqueEntries.length}**
+Period: April ${startYear} to March ${endYear}
+
+## Month-wise Breakdown
+${monthWiseSummary}
+
+## Complete Sales Voucher Listing
+${voucherListing}
+
+This comprehensive analysis is based on official Tally accounting records with FY-specific filtering applied.`;
+          
+          return res.json({
+            response: fallbackResponse,
+            metadata: {
+              totalSales,
+              entriesFound: uniqueEntries.length,
+              fyPeriod: startYear + '-' + fyMatch[2],
+              queryType: 'fy_sales',
+              optimization: 'FY-specific filtering applied',
+              monthWiseBreakdown
+            }
+          });
         }
       }
-    }
-    
-    // Deterministic precomputation: profit calculation for date-specific queries
-    console.log('[CHAT] Profit query check - queryType:', queryType, 'dateContext.isDateSpecific:', dateContext?.isDateSpecific);
-    if (queryType === 'profit' && dateContext && dateContext.isDateSpecific) {
-      console.log('[CHAT] Starting traditional profit calculation for regular profit queries');
-      
-      let totalRevenue = 0;
       let totalExpenses = 0;
       const revenueEntries = [];
       const expenseEntries = [];

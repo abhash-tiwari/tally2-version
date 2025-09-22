@@ -62,12 +62,14 @@ const ChatComponent = ({ onClose }) => {
       });
       const data = await res.json();
       
-      if (res.ok && data.answer) {
-        setChatHistory(prev => [...prev, { role: 'assistant', content: data.answer }]);
-        console.log('[FRONTEND] Received answer:', data.answer);
+      if (res.ok && (data.answer || data.response)) {
+        const content = data.answer || data.response;
+        setChatHistory(prev => [...prev, { role: 'assistant', content }]);
+        console.log('[FRONTEND] Received response:', content);
       } else {
-        setChatError(data.error || 'Failed to get answer.');
-        console.log('[FRONTEND] Chat error:', data.error);
+        const errorMsg = data.error || data.message || 'Failed to get answer.';
+        setChatError(errorMsg);
+        console.log('[FRONTEND] Chat error:', errorMsg);
       }
     } catch (err) {
       setChatError('Failed to get answer.');
