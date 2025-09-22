@@ -888,6 +888,7 @@ const QUERY_TYPE_KEYWORDS = {
   credit_note: ['credit note', 'credit notes', 'c/note', 'cnote', 'sales return', 'return'],
   cash_balance: ['cash', 'bank', 'icici', 'hdfc', 'sbi', 'kotak', 'indusind', 'axis', 'canara', 'pnb', 'union bank', 'current account', 'savings account', 'ca', 'sb', 'receipt', 'rcpt', 'payment', 'pymt', 'journal', 'jrnl'],
   fy_profit: ['profit in fy', 'fy profit', 'financial year profit', 'profit for fy', 'profit from', 'annual profit', 'yearly profit'],
+  fy_sales: ['sales in fy', 'fy sales', 'financial year sales', 'sales for fy', 'total sales in fy', 'annual sales', 'yearly sales'],
   profit: ['profit', 'loss', 'net income', 'earnings', 'pnl', 'p&l', 'profitability', 'accounting profit', 'net profit', 'gross profit']
 };
 
@@ -909,8 +910,19 @@ const BANK_PATTERNS = {
 
 function detectQueryType(query) {
   const lower = query.toLowerCase();
+  
+  // Check specific FY query types first (higher priority)
+  const priorityTypes = ['fy_profit', 'fy_sales'];
+  for (const type of priorityTypes) {
+    const keywords = QUERY_TYPE_KEYWORDS[type];
+    if (keywords && keywords.some(k => lower.includes(k))) {
+      return type;
+    }
+  }
+  
+  // Then check general query types
   for (const [type, keywords] of Object.entries(QUERY_TYPE_KEYWORDS)) {
-    if (keywords.some(k => lower.includes(k))) {
+    if (!priorityTypes.includes(type) && keywords.some(k => lower.includes(k))) {
       return type;
     }
   }
@@ -940,6 +952,12 @@ function filterChunksByType(chunks, type) {
   // For FY profit queries, return all chunks for March P&L search
   if (type === 'fy_profit') {
     console.log('[CHAT] FY Profit query detected - returning all chunks for March P&L search');
+    return chunks;
+  }
+  
+  // For FY sales queries, return all chunks for FY date filtering
+  if (type === 'fy_sales') {
+    console.log('[CHAT] FY Sales query detected - returning all chunks for FY date filtering');
     return chunks;
   }
   
@@ -1202,6 +1220,9 @@ exports.chat = async (req, res) => {
         return content.includes('14-May-25');
       });
       console.log('[CHAT] Chunks containing 14-May-25 after date filtering:', chunksWithMay14.length);
+    } else if (queryType === 'fy_sales') {
+      console.log('[CHAT] FY Sales query detected - will do custom FY date filtering');
+      dateFilteredChunks = filteredChunks; // Keep all chunks for custom FY filtering
     }
     
     // Placeholder for deterministic summaries
@@ -1400,6 +1421,169 @@ Provide a clear, professional response about the FY profit figures. Focus only o
         }
       } else {
         console.log('[CHAT] No FY P&L journal entries found, falling back to traditional calculation');
+      }
+    }
+    
+    // Deterministic precomputation: FY sales calculation (optimized)
+    if (queryType === 'fy_sales' && dateContext && dateContext.isDateSpecific) {
+      console.log('[CHAT] FY Sales query detected - using optimized FY date filtering');
+      
+      // Extract FY years from query to determine date range
+      // FY 2022-23 → Apr 2022 to Mar 2023, FY 2023-24 → Apr 2023 to Mar 2024
+      let startYear = null;
+      let endYear = null;
+      const fyMatch = question.match(/(?:fy|financial\s*year)?\s*(\d{4})[-\/\s]?(\d{2,4})/i);
+      if (fyMatch) {
+        startYear = fyMatch[1];
+        const endYearStr = fyMatch[2];
+        endYear = endYearStr.length === 2 ? '20' + endYearStr : endYearStr;
+        console.log('[CHAT] FY detected:', startYear + '-' + fyMatch[2], '→ Date range: Apr', startYear, 'to Mar', endYear);
+      }
+      
+      if (startYear && endYear) {
+        // Create FY date range: Apr startYear to Mar endYear
+        const fyStartDate = new Date(parseInt(startYear), 3, 1); // April 1st
+        const fyEndDate = new Date(parseInt(endYear), 2, 31); // March 31st
+        
+        console.log('[CHAT] FY Sales date range:', fyStartDate.toDateString(), 'to', fyEndDate.toDateString());
+        
+        // Extract sales entries within FY date range using same logic as extractSalesFromText
+        const salesEntries = [];
+        const monthAbbrevs = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        
+        console.log('[CHAT] Processing', dateFilteredChunks.length, 'chunks for FY sales extraction');
+        
+        for (const chunk of dateFilteredChunks) {
+          const content = chunk.content || '';
+          const lines = content.split(/\r?\n/);
+          let chunkSalesCount = 0;
+          
+          for (const line of lines) {
+            if (!line.includes('"Sale"')) continue;
+            
+            // Use same regex patterns as extractSalesFromText function
+            const lineRegexA = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",(-?[0-9,.-]+)\b.*$/;
+            const lineRegexB = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Sale",,(-?[0-9,.-]+)\b.*$/;
+            
+            let salesMatch = lineRegexA.exec(line);
+            if (!salesMatch) salesMatch = lineRegexB.exec(line);
+            
+            if (salesMatch) {
+              const dateStr = salesMatch[1];
+              const account = salesMatch[2] || '';
+              let amtRaw = salesMatch[3];
+              
+              // Handle Indian number formatting: -47,39,65 should become 473965
+              amtRaw = amtRaw.replace(/[,-]/g, '');
+              const amount = parseFloat(amtRaw);
+              
+              if (amount > 0) { // Only positive amounts for sales
+                // Parse date components
+                const dateMatch = dateStr.match(/(\d{1,2})-([A-Za-z]{3})-(\d{2})/);
+                if (dateMatch) {
+                  const day = parseInt(dateMatch[1]);
+                  const monthAbbr = dateMatch[2];
+                  const year = parseInt('20' + dateMatch[3]);
+                  
+                  // Create date for comparison
+                  const monthIndex = monthAbbrevs.indexOf(monthAbbr);
+                  if (monthIndex !== -1) {
+                    const entryDate = new Date(year, monthIndex, day);
+                    
+                    // Check if entry falls within FY range
+                    if (entryDate >= fyStartDate && entryDate <= fyEndDate) {
+                      const key = `${dateStr}|${account}|${amount}`;
+                      
+                      salesEntries.push({
+                        date: dateStr,
+                        account,
+                        amount,
+                        key,
+                        sortDate: entryDate
+                      });
+                      chunkSalesCount++;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          
+          if (chunkSalesCount > 0) {
+            console.log('[CHAT] Found', chunkSalesCount, 'FY sales entries in chunk from', chunk.fileName || 'Unknown file');
+          }
+        }
+        
+        console.log('[CHAT] Total FY sales entries found before deduplication:', salesEntries.length);
+        
+        // Deduplicate and sort
+        const uniqueEntries = [];
+        const seenKeys = new Set();
+        
+        for (const entry of salesEntries) {
+          if (!seenKeys.has(entry.key)) {
+            seenKeys.add(entry.key);
+            uniqueEntries.push(entry);
+          }
+        }
+        
+        uniqueEntries.sort((a, b) => a.sortDate - b.sortDate);
+        
+        if (uniqueEntries.length > 0) {
+          const totalSales = uniqueEntries.reduce((sum, entry) => sum + entry.amount, 0);
+          
+          const salesSummary = `\n\n=== OFFICIAL FY SALES (${startYear}-${fyMatch[2]}) ===\n` +
+            `TOTAL SALES: ₹${totalSales.toLocaleString()}\n\n` +
+            `SALES ENTRIES FOUND (${uniqueEntries.length} entries):\n` +
+            uniqueEntries.map(e => `- ${e.date}: ${e.account} = ₹${e.amount.toLocaleString()}`).join('\n') +
+            `\n\nNOTE: This is the complete FY sales data:\n` +
+            `• Date Range: April ${startYear} to March ${endYear}\n` +
+            `• OPTIMIZED: Filtered only FY-specific sales entries\n` +
+            `• Matches standard FY accounting period\n` +
+            `=== END FY SALES ===\n`;
+          
+          console.log('[CHAT] Returning official FY Sales (OPTIMIZED):', { 
+            totalSales, 
+            entriesFound: uniqueEntries.length,
+            fyPeriod: `${startYear}-${fyMatch[2]}`,
+            optimization: 'Used FY-specific date filtering'
+          });
+          
+          // Generate AI response with FY sales context
+          const aiPrompt = `You are a financial analyst. The user asked: "${question}"
+
+Here is the official FY sales data found:
+${salesSummary}
+
+Provide a clear, professional response about the FY sales figures. Focus only on the official sales entries provided. Do not fabricate or estimate any additional data.`;
+          
+          try {
+            const openaiResponse = await axios.post(
+              'https://api.openai.com/v1/chat/completions',
+              {
+                model: process.env.OPENAI_MODEL || 'gpt-4o',
+                messages: [{ role: 'user', content: aiPrompt }],
+                max_tokens: 1500,
+                temperature: 0.2
+              },
+              {
+                headers: {
+                  'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                  'Content-Type': 'application/json'
+                }
+              }
+            );
+            
+            const aiAnswer = openaiResponse.data.choices[0].message.content || salesSummary;
+            console.log('[CHAT] AI response generated for FY Sales entries');
+            return res.json({ answer: aiAnswer });
+          } catch (error) {
+            console.error('[CHAT] OpenAI API error for FY Sales entries:', error);
+            return res.json({ answer: salesSummary });
+          }
+        } else {
+          console.log('[CHAT] No FY sales entries found for period:', startYear + '-' + fyMatch[2]);
+        }
       }
     }
     
