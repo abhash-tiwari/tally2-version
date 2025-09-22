@@ -1835,9 +1835,9 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Precomputed purchases (date-filtered scan):', { count: entries.length, total });
     }
 
-    // Deterministic precomputation: credit notes (C/Note) for date-specific queries
-    let creditNoteSummary = '';
-    if (queryType === 'credit_note' && dateContext && dateContext.isDateSpecific) {
+    // Deterministic precomputation: sales for date-specific queries
+    let salesSummary = '';
+    if (queryType === 'sales' && dateContext && dateContext.isDateSpecific) {
       const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       const wantedMonths = new Set(
         (dateContext.months || [])
@@ -1849,25 +1849,21 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       let entries = [];
       for (const ch of dateFilteredChunks) {
         const text = ch.content || (ch._doc && ch._doc.content) || '';
-        const found = extractCreditNotesFromText(text, wantedMonths, wantedYears)
+        const found = extractSalesFromText(text, wantedMonths, wantedYears)
           .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
         if (found.length) {
-          console.log('[CHAT] Found', found.length, 'credit note entries in chunk from', ch.fileName);
+          console.log('[CHAT] Found', found.length, 'sales entries in chunk from', ch.fileName);
           console.log('[CHAT] Sample entries:', found.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
           entries.push(...found);
         }
       }
       
       // Debug: Check for duplicates and negative amounts
-      console.log('[CHAT] Total credit note entries before filtering:', entries.length);
+      console.log('[CHAT] Total entries before filtering:', entries.length);
       const positiveEntries = entries.filter(e => e.amount > 0);
       const negativeEntries = entries.filter(e => e.amount < 0);
       const zeroEntries = entries.filter(e => e.amount === 0);
       console.log('[CHAT] Positive amounts:', positiveEntries.length, 'Negative amounts:', negativeEntries.length, 'Zero amounts:', zeroEntries.length);
-      
-      if (negativeEntries.length > 0) {
-        console.log('[CHAT] Sample negative entries:', negativeEntries.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
-      }
       
       // Remove duplicates based on date + account + amount
       const uniquePositiveEntries = [];
@@ -1880,12 +1876,12 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         }
       }
       
-      console.log('[CHAT] After deduplication: ', uniquePositiveEntries.length, 'unique positive credit note entries');
+      console.log('[CHAT] After deduplication:', uniquePositiveEntries.length, 'unique positive entries');
       
       // Debug: List all entries to see what's being found
-      console.log('[CHAT] All credit note entries found:');
+      console.log('[CHAT] All sales entries found:');
       uniquePositiveEntries.forEach((entry, index) => {
-        console.log(`  ${index + 1}. ${entry.date}: ${entry.account} = ${entry.amount}`);
+        console.log(`${index + 1}. ${entry.date}: ${entry.account} = ${entry.amount}`);
       });
       
       entries = uniquePositiveEntries;
@@ -1895,23 +1891,30 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       let pythonCalculationNote = '';
       
       try {
-        console.log('[CHAT] Using Python for accurate credit note total calculation from', entries.length, 'entries...');
+        console.log('[CHAT] Using Python for accurate sales total calculation for', dateContext.years?.[0] || 'unknown year', 'from', entries.length, 'entries...');
         const { calculateSalesTotals } = require('../utils/pythonCalculator');
         const pythonResult = await calculateSalesTotals(entries, dateContext);
         finalTotal = pythonResult.total_amount;
         pythonCalculationNote = ' (Python-calculated)';
-        console.log('[CHAT] Python calculation successful:', { originalTotal: finalTotal, pythonTotal: pythonResult.total_amount });
+        console.log('[CHAT] Python calculation for', dateContext.years?.[0] || 'unknown year', 'successful:', { total: finalTotal });
       } catch (error) {
         console.log('[CHAT] Python calculation failed, using fallback:', error.message);
         pythonCalculationNote = ' (Fallback calculation)';
       }
 
-      // Create detailed summary for AI context
-      const sample = entries.slice(0, 25)
-        .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
+      // Create COMPLETE listing of ALL entries for AI to use
+      const allEntriesText = entries
+        .sort((a, b) => new Date(a.date.split('-').reverse().join('-')) - new Date(b.date.split('-').reverse().join('-')))
+        .map((e, index) => `${index + 1}. ${e.date}: ${e.account} = ₹${e.amount.toLocaleString()}`)
         .join('\n');
-      creditNoteSummary = `\n\nPRECOMPUTED CREDIT NOTE SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total credit notes: ${finalTotal.toLocaleString()}${pythonCalculationNote}\nAll entries:\n${sample}\n`;
-      console.log('[CHAT] Precomputed credit notes (date-filtered scan):', { count: entries.length, total: finalTotal });
+
+      salesSummary = `\n\n=== COMPLETE SALES VOUCHER LIST ===\n` +
+        `TOTAL: ${entries.length} vouchers, Amount: ₹${finalTotal.toLocaleString()}${pythonCalculationNote}\n\n` +
+        `ALL SALES VOUCHERS FOUND:\n${allEntriesText}\n\n` +
+        `**CRITICAL INSTRUCTION**: List ALL ${entries.length} vouchers above. Do NOT create fake examples.\n` +
+        `Use ONLY the actual data provided. Each line above is a real voucher from the Tally file.\n` +
+        `=== END COMPLETE LIST ===\n`;
+      console.log('[CHAT] Precomputed sales (date-filtered scan with breakdown) generated.');
     }
 
     // Deterministic precomputation: cash balance for cash-related queries
@@ -2179,9 +2182,8 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       }
     }
 
-    // Deterministic precomputation: sales (Sale) for date-specific queries
-    let salesSummary = '';
-    if (queryType === 'sales' && dateContext && dateContext.isDateSpecific) {
+    // Additional sales processing (only if not already processed above)
+    if (queryType === 'sales' && dateContext && dateContext.isDateSpecific && !salesSummary) {
       const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       const wantedMonths = new Set(
         (dateContext.months || [])
@@ -2311,41 +2313,21 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     console.log('[CHAT] Token estimation - Context:', contextLength, 'chars, Validation:', validationLength, 'chars, Question:', questionLength, 'chars');
     console.log('[CHAT] Estimated total tokens:', totalEstimatedTokens);
     
-    // If a deterministic precomputation was successful, we can use a much smaller context
-    // to force the model to rely on the precomputed summary.
-    let finalContext, finalValidationContext;
-
-    if (queryType === 'sales' && salesSummary && salesSummary.includes('PRECOMPUTED SALES SUMMARY')) {
-        finalContext = ''; // Clear the context from chunks
-        finalValidationContext = ''; // Clear validation context as well
-        console.log('[CHAT] Sales query with precomputed summary. Clearing chunk context to force model focus.');
-    } else if (queryType === 'expense' && (customDutySummary || majorExpenseSummary)) {
-        finalContext = ''; // Clear the context from chunks
-        finalValidationContext = ''; // Clear validation context as well
-        console.log('[CHAT] Expense query with precomputed summary. Clearing chunk context to force model focus.');
+    // Smart context clearing for precomputed queries
+    if (queryType === 'expense' && (customDutySummary || majorExpenseSummary)) {
+      finalContext = ''; // Clear chunk context to force model focus on precomputed data
+      finalValidationContext = '';
+      console.log('[CHAT] Expense query with precomputed summary. Clearing chunk context to force model focus.');
+    }
+    
+    // Clear context for sales queries to force AI to use precomputed data only
+    if (queryType === 'sales' && salesSummary) {
+      finalContext = ''; // Clear chunk context to force model focus on precomputed data
+      finalValidationContext = '';
+      console.log('[CHAT] Sales query with precomputed summary. Clearing chunk context to force model focus.');
     } else {
-        // Fallback to original context logic if no precomputation is done
-        if (totalEstimatedTokens > 6000) { // Conservative limit
-            const MAX_TIGHT_CONTEXT_CHARS = 9000;
-            let tight = '';
-            let used = 0;
-            for (let i = 0; i < condensedChunks.length; i += 1) {
-                const chunk = condensedChunks[i];
-                const fileName = chunk.fileName || 'Unknown file';
-                const score = chunk.score ? ` (relevance: ${chunk.score.toFixed(3)})` : '';
-                const trimmed = (chunk.condensed || '').slice(0, 1200);
-                const piece = `[CHUNK ${i + 1} - From: ${fileName}${score}]\n${trimmed}\n\n`;
-                if ((tight.length + piece.length) > MAX_TIGHT_CONTEXT_CHARS) break;
-                tight += piece;
-                used += 1;
-            }
-            finalContext = tight;
-            finalValidationContext = validationContext;
-            console.log('[CHAT] Tight condensation included', used, 'of', condensedChunks.length, 'matched chunks. Chars:', finalContext.length);
-        } else {
-            finalContext = context;
-            finalValidationContext = validationContext;
-        }
+      finalContext = context;
+      finalValidationContext = validationContext;
     }
 
     // Enhance prompt with query-type-specific instructions
@@ -2353,7 +2335,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     if (queryType === 'loan') {
       extraInstructions = '\nIMPORTANT: Only include transactions where the account or narration contains the word "Loan", "OD", "Bank Loan", "Secured Loan", or "Unsecured Loan". Ignore regular payments, receipts, and expenses. Deduplicate loans by account and counterparty. Do not double-count the same loan.';
     } else if (queryType === 'sales') {
-      extraInstructions = '\nCRITICAL: If you see a "PRECOMPUTED SALES SUMMARY" section with breakdown by period, USE ONLY those pre-calculated totals. DO NOT perform any calculations yourself. Simply present the totals that are already provided for each period. The system has already done all calculations for you.';
+      extraInstructions = '\nCRITICAL: If you see a "COMPLETE SALES VOUCHER LIST" section, USE ONLY that data. List ALL vouchers exactly as provided. DO NOT create fake examples like "ABC Corp", "XYZ Ltd". Use ONLY the real company names and amounts from the actual Tally data. Each voucher line is real data from the file.';
     } else if (queryType === 'purchase') {
       extraInstructions = '\nIMPORTANT: Include ALL purchase-related entries (purchase, supplier, GRN, material, inventory, stock, goods received). Do not overlook any purchase transactions. Check for variations like "purc", "supplier", "material", "inventory", "stock", "goods received", "GRN".';
     } else if (queryType === 'journal') {
