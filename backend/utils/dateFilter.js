@@ -107,9 +107,18 @@ function filterChunksByDate(chunks, dateContext) {
         // Only year specified
         const parsedDate = parseTallyDate(dateStr);
         if (!parsedDate) return false;
-        const fullTargetYear = parseInt(dateContext.years[0]) < 50 ? 
-          2000 + parseInt(dateContext.years[0]) : 
-          1900 + parseInt(dateContext.years[0]);
+        
+        // Handle both 2-digit and 4-digit years properly
+        const yearStr = dateContext.years[0];
+        let fullTargetYear;
+        if (yearStr.length === 2) {
+          // 2-digit year: apply conversion logic
+          fullTargetYear = parseInt(yearStr) < 50 ? 2000 + parseInt(yearStr) : 1900 + parseInt(yearStr);
+        } else {
+          // 4-digit year: use as is
+          fullTargetYear = parseInt(yearStr);
+        }
+        
         return parsedDate.getFullYear() === fullTargetYear;
       }
       

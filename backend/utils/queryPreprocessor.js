@@ -182,7 +182,10 @@ function extractDateContext(query) {
     /\b(\d{4})\s+(first|second|third|fourth)\s+(quarter|quater)\b/gi,
     // Quarter 1/2/3/4 format (with typo support)
     /\b(quarter|quater)\s+([1-4])\s+(\d{4})\b/gi,
-    /\b(\d{4})\s+(quarter|quater)\s+([1-4])\b/gi
+    /\b(\d{4})\s+(quarter|quater)\s+([1-4])\b/gi,
+    // Additional patterns for "quarter 1 of 2024" format
+    /\b(quarter|quater)\s+([1-4])\s+(?:of\s+)?(\d{4})\b/gi,
+    /\b(quarter|quater)\s+([1-4])\s+.*?(\d{4})\b/gi
   ];
 
   for (const qp of quarterPatterns) {
@@ -216,7 +219,7 @@ function extractDateContext(query) {
             }
           } else if (/^(quarter|quater)$/i.test(m[1])) {
             quarterNum = parseInt(m[2]);
-            year = m[3];
+            year = m[3] || m[4]; // Handle both m[3] and m[4] for new patterns
           }
         }
 
