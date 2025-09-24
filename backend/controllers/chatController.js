@@ -1,5 +1,6 @@
 const TallyData = require('../models/TallyData');
 const PLData = require('../models/PLData');
+const LedgerData = require('../models/LedgerData');
 const { getEmbedding } = require('../utils/embedding');
 const { findMostSimilarChunks, findKeywordMatches } = require('../utils/vectorSearch');
 const { preprocessQuery, extractDateContext, createEnhancedPrompt } = require('../utils/queryPreprocessor');
@@ -13,80 +14,70 @@ const axios = require('axios');
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
 console.log(`Using OpenAI model: ${OPENAI_MODEL}`);
 
-// Major Expense Keywords - Comprehensive ledger list for expense detection
-const MAJOR_EXPENSE_KEYWORDS = [
-  // Export/Import Related
-  'Agency Charges IGST- EXPORT', 'CFS Charges IGST- EXPORT', 'Endorsement Charges-Export',
-  'Export Ocean Freight', 'Transportation Charges@12% -Export', 'Custom Duty- Rough Marble Blocks',
-  'Agency Charges', 'Agency Charges IGST', 'Bonded Warehouse Charges', 'CFS Charges',
-  'CFS Charges IGST', 'Concor Charges', 'Container Handling Charges', 'Damage Charges',
-  'DESTUFF CHARGES', 'Detention Charges', 'Documentation Charge', 'Documentation Charge @18%',
-  'Endorsement Charges', 'Import Insurance', 'Import Insurance-IGST', 'Ocean Freight',
-  'Ocean Freights', 'Penalty Custom', 'Shipping Line Charges', 'Stamp Duty Without GST',
-  'Storage Charges', 'Transportation Charges', 'Transport Charges',
-  
-  // Direct Expenses
-  'Damage -Marble Block', 'Sawing Charges', 'Scrap', 'Other Brokerage Charges', 'Stock Broker Charges',
-  
-  // Employee Related
-  'Annual Bonus', 'Basic Salary', 'House Rent Allowance', 'Special Allowance', 'Travel Allowance',
-  
-  // Marketing & Gifts
-  'Advertising Expense @5', 'Gift Sample', 'Amit-Keyman', 'Rajesh-Keyman',
-  
-  // Insurance
-  'Insurance Expense', 'Insurance Without GST',
-  
-  // Interest & Loans
-  'Interest on Bank Loan', 'Interest On CC Limit', 'Interest on LC Bill Discounting',
-  'Interest on Secured Loan', 'Interest on Unsecured Loan', 'CPP Shield Expense',
-  'Documentation Charges', 'Other Loan Expenses',
-  
-  // Office Expenses
-  'Office Expenses @18', 'Office Expenses @3%', 'Office Expenses IGST @18',
-  'Office Expenses Without GST', 'Registration Fees',
-  
-  // Professional Fees
-  'Professional Fees for Director', 'Professional Fees for Director @18%',
-  'Professional Fees for Director Nil Rated',
-  
-  // Rent
-  'Rent Expenses', 'Rent- Kanakia Office', 'Rent-Silvassa',
-  
-  // Compliance & Legal
-  'Statutory Compliance', 'Interest on Late Payment', 'CGST Interest',
-  'Interest on Late Payment Adv Tax', 'Interest on Late Payment- TCS',
-  'Interest on Late Payment- TDS', 'SGST Interest', 'Custodial Fees',
-  'GST Paid F.Y 2021-22', 'Issuer Admission Processing Fees', 'Professional Fees',
-  'PT Payment for Directors', 'PT Payment of Company', 'ROC Reimbursement',
-  'Tax Audit Fees',
-  
-  // Travel & Food
-  'Food Expenses Without GST ledgers', 'Hotel Accomodation', 'Hotel Expense',
-  'Travel Expense @12', 'Travel Expense @18', 'Travel Expense @5', 'Travel Expense-Foreign',
-  'Travel Expense IGST 12%', 'Travel Expense IGST 18%', 'Travel Expense IGST 5%',
-  'Travel Expense Without GST', 'Vehicle Expenses@5%', 'Visa Expenses',
-  
-  // Utilities
-  'Electricity Expense', 'Mobile Expenses', 'Telephone Expense', 'Telephone Expenses Without GST',
-  
-  // Miscellaneous
-  'Annual Maintenance Charges', 'Bank Charges Forex', 'Bank Charges with GST',
-  'Bank Charrges Without GST', 'Bill Discounting Charges', 'Business Promotion Exp',
-  'Car Accessories', 'Car Expenses', 'Car Warranty Epired', 'CGSTMSE Fees',
-  'Commission Expenses', 'Commission on Handling', 'Conveyance', 'Courier Expense @18',
-  'Courier Expense Without GST', 'Depreciation', 'Domain Expenses', 'Domian Expense@18%',
-  'Exchange Expense', 'Extended Warranty Expenses', 'FEF Account', 'Finance Cost',
-  'FSSAI Annual Return Filling', 'FSSAI Registration Charges', 'FSSAI Renewal Charges',
-  'Google Workspace', 'HR Consultancy Service', 'Insurance Car', 'Labour Expenses',
-  'Misc. Expenses', 'Office Maintenance Charges', 'Other Expenes',
-  'Outsourcing Consultancy Expenses', 'Parking Charges', 'Printing & Stationery @12',
-  'Printing & Stationery @18', 'Printing & Stationery @5', 'Printing & Stationery Without GST',
-  'Processing Fees @18%', 'Professional Fees-IGST', 'Professional Fees Nil Rated',
-  'Provision for Expense', 'PT Payment for FY 21-22 for Directors', 'Reimbursement Expense',
-  'Repair & Maintenance', 'ROC Filing Fees', 'ROC Filling', 'Round Off', 'Staff Welfare',
-  'Stamp Duty Against Loan', 'Stamp Duty Charges for ROC', 'Write Off Expenses'
+// Dynamic expense keywords cache
+let dynamicExpenseKeywords = [];
+let lastKeywordUpdate = 0;
+const KEYWORD_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+// Fallback hardcoded keywords (used when no ledger data available)
+const FALLBACK_EXPENSE_KEYWORDS = [
+  // Common expense patterns
+  'expense', 'charges', 'fees', 'cost', 'payment', 'rent', 'salary', 'interest',
+  'insurance', 'travel', 'office', 'professional', 'freight', 'transport',
+  'maintenance', 'repair', 'electricity', 'telephone', 'mobile', 'courier',
+  'advertising', 'promotion', 'commission', 'brokerage', 'customs', 'duty',
+  'depreciation', 'bonus', 'allowance', 'welfare', 'compliance', 'audit'
 ];
+
+// Get dynamic expense keywords from user's ledger data
+async function getDynamicExpenseKeywords(userId) {
+  try {
+    // Check cache first
+    const now = Date.now();
+    if (dynamicExpenseKeywords.length > 0 && (now - lastKeywordUpdate) < KEYWORD_CACHE_DURATION) {
+      return dynamicExpenseKeywords;
+    }
+
+    console.log('[DYNAMIC_KEYWORDS] Fetching expense keywords for user:', userId);
+    
+    const ledgerData = await LedgerData.find({ userId });
+    const keywords = new Set();
+    
+    ledgerData.forEach(data => {
+      data.ledgers.forEach(ledger => {
+        // Include ledgers from expense categories
+        if (ledger.category && ledger.category.toLowerCase().includes('expense')) {
+          ledger.keywords.forEach(keyword => keywords.add(keyword));
+        }
+        
+        // Include ledgers with expense-related names
+        const ledgerLower = ledger.name.toLowerCase();
+        const expenseIndicators = ['expense', 'charges', 'fees', 'cost', 'payment', 'rent', 'salary', 'freight', 'transport'];
+        
+        if (expenseIndicators.some(indicator => ledgerLower.includes(indicator))) {
+          ledger.keywords.forEach(keyword => keywords.add(keyword));
+        }
+      });
+    });
+    
+    dynamicExpenseKeywords = Array.from(keywords);
+    lastKeywordUpdate = now;
+    
+    console.log('[DYNAMIC_KEYWORDS] Found', dynamicExpenseKeywords.length, 'dynamic expense keywords');
+    
+    // If no dynamic keywords found, use fallback
+    if (dynamicExpenseKeywords.length === 0) {
+      console.log('[DYNAMIC_KEYWORDS] No ledger data found, using fallback keywords');
+      return FALLBACK_EXPENSE_KEYWORDS;
+    }
+    
+    return dynamicExpenseKeywords;
+    
+  } catch (error) {
+    console.error('[DYNAMIC_KEYWORDS] Error fetching keywords:', error);
+    return FALLBACK_EXPENSE_KEYWORDS;
+  }
+}
 
 // Custom Duty specific keywords for dedicated handling
 const CUSTOM_DUTY_KEYWORDS = [
@@ -94,21 +85,24 @@ const CUSTOM_DUTY_KEYWORDS = [
   'Penalty Custom', 'customs duty', 'custom duties'
 ];
 
-// Extract major expenses from text content for specific month/year (only debited amounts)
-function extractMajorExpensesFromText(content, wantedMonthsSet, wantedYearsSet) {
+// Extract major expenses from text content using dynamic keywords
+async function extractMajorExpensesFromText(content, wantedMonthsSet, wantedYearsSet, userId) {
   const results = [];
   if (!content || typeof content !== 'string') return results;
+  
+  // Get dynamic expense keywords for this user
+  const expenseKeywords = await getDynamicExpenseKeywords(userId);
   
   const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
   const lines = content.split(/\r?\n/);
   
-  console.log('[MAJOR_EXPENSE] Processing', lines.length, 'lines for expense detection (debited amounts only)');
+  console.log('[MAJOR_EXPENSE] Processing', lines.length, 'lines with', expenseKeywords.length, 'dynamic keywords');
   
   for (const line of lines) {
     if (!line.trim()) continue;
     
-    // Check if line contains any major expense keywords
-    const hasExpenseKeyword = MAJOR_EXPENSE_KEYWORDS.some(keyword => 
+    // Check if line contains any expense keywords
+    const hasExpenseKeyword = expenseKeywords.some(keyword => 
       line.toLowerCase().includes(keyword.toLowerCase())
     );
     
@@ -139,7 +133,7 @@ function extractMajorExpensesFromText(content, wantedMonthsSet, wantedYearsSet) 
       const accountField = fields[1].replace(/^"|"$/g, '').trim();
       
       // Check if this account matches any expense keyword
-      const matchedKeyword = MAJOR_EXPENSE_KEYWORDS.find(keyword => 
+      const matchedKeyword = expenseKeywords.find(keyword => 
         accountField.toLowerCase().includes(keyword.toLowerCase())
       );
       
@@ -889,7 +883,8 @@ const QUERY_TYPE_KEYWORDS = {
   cash_balance: ['cash', 'bank', 'icici', 'hdfc', 'sbi', 'kotak', 'indusind', 'axis', 'canara', 'pnb', 'union bank', 'current account', 'savings account', 'ca', 'sb', 'receipt', 'rcpt', 'payment', 'pymt', 'journal', 'jrnl'],
   fy_profit: ['profit in fy', 'fy profit', 'financial year profit', 'profit for fy', 'profit from', 'annual profit', 'yearly profit'],
   fy_sales: ['sales in fy', 'fy sales', 'financial year sales', 'sales for fy', 'total sales in fy', 'annual sales', 'yearly sales'],
-  profit: ['profit', 'loss', 'net income', 'earnings', 'pnl', 'p&l', 'profitability', 'accounting profit', 'net profit', 'gross profit']
+  profit: ['profit', 'loss', 'net income', 'earnings', 'pnl', 'p&l', 'profitability', 'accounting profit', 'net profit', 'gross profit'],
+  ledger: [] // Ledger queries are detected by ledger context, not keywords
 };
 
 // Enhanced bank detection patterns
@@ -958,6 +953,12 @@ function filterChunksByType(chunks, type) {
   // For FY sales queries, return all chunks for FY date filtering
   if (type === 'fy_sales') {
     console.log('[CHAT] FY Sales query detected - returning all chunks for FY date filtering');
+    return chunks;
+  }
+  
+  // For ledger queries, return all chunks for ledger-specific filtering
+  if (type === 'ledger') {
+    console.log('[CHAT] Ledger query detected - returning all chunks for ledger-specific filtering');
     return chunks;
   }
   
@@ -1151,8 +1152,13 @@ exports.chat = async (req, res) => {
     const dateContext = extractDateContext(question);
     console.log('[CHAT] Date context detected:', dateContext);
     
+    // Check for individual ledger queries
+    const { extractLedgerContext } = require('../utils/queryPreprocessor');
+    const ledgerContext = await extractLedgerContext(question, userId);
+    console.log('[CHAT] Ledger context detected:', ledgerContext);
+    
     // Detect query type and bank name
-    const queryType = detectQueryType(question);
+    const queryType = ledgerContext.isLedgerQuery ? 'ledger' : detectQueryType(question);
     const bankName = detectBankQuery(question);
     console.log('[CHAT] Query type detected:', queryType, 'Bank detected:', bankName);
     
@@ -2124,9 +2130,155 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Precomputed purchases (date-filtered scan):', { count: entries.length, total });
     }
 
-    // Deterministic precomputation: sales for date-specific queries
+    // Individual ledger search handling
+    let ledgerSummary = '';
+    if (queryType === 'ledger' && ledgerContext.isLedgerQuery) {
+      console.log('[CHAT] Processing individual ledger query for:', ledgerContext.matchedLedgers.map(l => l.name));
+      
+      const ledgerEntries = [];
+      // Use only the top matched ledger's keywords for more precise search
+      const topLedger = ledgerContext.matchedLedgers[0];
+      // For exact matching, prioritize the full ledger name first
+      const searchKeywords = [topLedger.name.toLowerCase()];
+      console.log('[CHAT] Using exact match for top ledger:', topLedger.name, 'Keywords:', searchKeywords);
+      
+      // Search for transactions involving the matched ledgers
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const lines = text.split(/\r?\n/);
+        
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          
+          // Check if line contains any of the ledger keywords
+          const hasLedgerKeyword = searchKeywords.some(keyword => 
+            line.toLowerCase().includes(keyword.toLowerCase())
+          );
+          
+          if (hasLedgerKeyword) {
+            // Extract transaction details
+            const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+            const dateMatch = dateRegex.exec(line);
+            
+            if (dateMatch) {
+              const currentDate = dateMatch[0];
+              const monthAbbr = dateMatch[2].toLowerCase();
+              const year = dateMatch[3];
+              
+              // Apply date filtering if specified
+              if (dateContext && dateContext.isDateSpecific) {
+                const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+                const wantedMonths = new Set(
+                  (dateContext.months || [])
+                    .map(m => String(m).toLowerCase().slice(0,3))
+                    .filter(m => monthAbbrevs.includes(m))
+                );
+                const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+                
+                const monthOk = wantedMonths.size === 0 || wantedMonths.has(monthAbbr);
+                const yearOk = wantedYears.size === 0 || wantedYears.has(year);
+                
+                if (!monthOk || !yearOk) continue;
+              }
+              
+              // Parse CSV fields to extract account and amount
+              const fields = line.split(',');
+              if (fields.length >= 5) {
+                const accountField = fields[1].replace(/^"|"$/g, '').trim();
+                const voucherType = fields[3].replace(/^"|"$/g, '').trim();
+                
+                // Extract amounts from debit/credit columns
+                let amount = 0;
+                let transactionType = 'unknown';
+                
+                // Check Amount1 field (field 4) and Amount2 field (field 5)
+                const amount1Field = fields[4].replace(/^"|"$/g, '').trim();
+                const amount2Field = fields[5] ? fields[5].replace(/^"|"$/g, '').trim() : '';
+                
+                if (amount1Field && amount1Field.match(/^-?[0-9,.]+$/)) {
+                  const amt1 = parseFloat(amount1Field.replace(/[,-]/g, ''));
+                  if (!isNaN(amt1)) {
+                    amount = amt1;
+                    transactionType = amt1 < 0 ? 'debit' : 'credit';
+                  }
+                }
+                
+                if (amount2Field && amount2Field.match(/^-?[0-9,.]+$/)) {
+                  const amt2 = parseFloat(amount2Field.replace(/[,-]/g, ''));
+                  if (!isNaN(amt2) && Math.abs(amt2) > Math.abs(amount)) {
+                    amount = amt2;
+                    transactionType = amt2 < 0 ? 'debit' : 'credit';
+                  }
+                }
+                
+                if (amount !== 0) {
+                  ledgerEntries.push({
+                    date: currentDate,
+                    account: accountField,
+                    amount: Math.abs(amount),
+                    transactionType: transactionType,
+                    voucherType: voucherType,
+                    fileName: ch.fileName || 'Unknown file',
+                    matchedKeywords: searchKeywords.filter(k => line.toLowerCase().includes(k.toLowerCase()))
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Remove duplicates and sort by date
+      const uniqueLedgerEntries = [];
+      const seen = new Set();
+      for (const entry of ledgerEntries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}|${entry.transactionType}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniqueLedgerEntries.push(entry);
+        }
+      }
+      
+      // Sort by date
+      uniqueLedgerEntries.sort((a, b) => {
+        const dateA = new Date(a.date.split('-').reverse().join('-'));
+        const dateB = new Date(b.date.split('-').reverse().join('-'));
+        return dateA - dateB;
+      });
+      
+      // Calculate totals
+      const totalDebits = uniqueLedgerEntries.filter(e => e.transactionType === 'debit').reduce((s, e) => s + e.amount, 0);
+      const totalCredits = uniqueLedgerEntries.filter(e => e.transactionType === 'credit').reduce((s, e) => s + e.amount, 0);
+      const netAmount = totalCredits - totalDebits;
+      
+      // Create detailed listing
+      const entriesListing = uniqueLedgerEntries.slice(0, 50)
+        .map(e => `- ${e.date} | ${e.account} | ${e.transactionType.toUpperCase()}: ₹${e.amount.toLocaleString()} | ${e.voucherType}`)
+        .join('\n');
+      
+      ledgerSummary = `\n\nPRECOMPUTED LEDGER SEARCH RESULTS:\n` +
+        `- Primary Ledger: ${topLedger.name} (Score: ${topLedger.matchScore})\n` +
+        `- Exact Match Search: "${topLedger.name}"\n` +
+        `- Total Transactions Found: ${uniqueLedgerEntries.length}\n` +
+        `- Total Debits: ₹${totalDebits.toLocaleString()}\n` +
+        `- Total Credits: ₹${totalCredits.toLocaleString()}\n` +
+        `- Net Amount: ₹${netAmount.toLocaleString()}\n\n` +
+        `DETAILED TRANSACTION LISTING:\n${entriesListing}\n` +
+        (uniqueLedgerEntries.length > 50 ? `\n...and ${uniqueLedgerEntries.length - 50} more transactions\n` : '') +
+        `\n**IMPORTANT**: These are actual transactions from your Tally data involving the specified ledger(s).\n`;
+      
+      console.log('[CHAT] Precomputed ledger search:', {
+        matchedLedgers: ledgerContext.matchedLedgers.length,
+        transactions: uniqueLedgerEntries.length,
+        totalDebits,
+        totalCredits,
+        netAmount
+      });
+    }
+
+    // Deterministic precomputation: FY sales for FY-specific queries
     let salesSummary = '';
-    if (queryType === 'sales' && dateContext && dateContext.isDateSpecific) {
+    if (queryType === 'fy_sales' && dateContext && dateContext.isDateSpecific) {
       const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       const wantedMonths = new Set(
         (dateContext.months || [])
@@ -2335,12 +2487,12 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
           console.log('[CHAT] No Custom Duty expenses found for the specified period');
         }
       } else {
-        // Handle Major Expenses queries using keyword matching
+        // Handle Major Expenses queries using dynamic keyword matching
         const majorExpenseEntries = [];
         for (const ch of dateFilteredChunks) {
           const text = ch.content || (ch._doc && ch._doc.content) || '';
-          const found = extractMajorExpensesFromText(text, wantedMonths, wantedYears)
-            .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+          const found = await extractMajorExpensesFromText(text, wantedMonths, wantedYears, userId)
+            .then(results => results.map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' })));
           if (found.length) {
             console.log('[CHAT] Found', found.length, 'major expense entries in chunk from', ch.fileName);
             majorExpenseEntries.push(...found);
@@ -2643,6 +2795,8 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       extraInstructions = '\nCRITICAL: Use the COMPLETE PAYMENT ENTRIES LIST provided in the context. This contains ALL payment entries found. Present the complete list organized by date, showing every single entry.';
     } else if (queryType === 'profit') {
       extraInstructions = '\nCRITICAL: Use the ACCOUNTING PROFIT CALCULATION provided in the context. This contains the correct profit calculation using proper accounting principles. Present the results from this calculation, NOT a simple credits minus debits approach.';
+    } else if (queryType === 'ledger') {
+      extraInstructions = '\nCRITICAL: Use the PRECOMPUTED LEDGER SEARCH RESULTS provided. This contains all transactions for the specific ledger(s) requested. Present the detailed transaction listing and totals from this summary. Show both debits and credits with dates and amounts.';
     }
 
     // Add bank-specific instructions if bank is detected
@@ -2666,7 +2820,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       salesSummary,
       customDutySummary || majorExpenseSummary,
       journalSummary,
-      cashBalanceSummary,
+      cashBalanceSummary + ledgerSummary,
       queryType,
       dateContext
     );

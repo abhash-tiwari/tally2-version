@@ -1,5 +1,7 @@
 // Query preprocessing utility to improve AI understanding
-// Handles date normalization, month name expansion, and other query improvements
+// Handles date normalization, month name expansion, ledger search, and other query improvements
+
+const LedgerData = require('../models/LedgerData');
 
 /**
  * Helper function to get all months between two given months and years
@@ -670,9 +672,103 @@ FINAL ANSWER:
   return prompt;
 }
 
+/**
+ * Search for ledger-specific queries and extract ledger keywords
+ * @param {string} query - User query
+ * @param {string} userId - User ID for ledger lookup
+ * @returns {Object} - Ledger search context
+ */
+async function extractLedgerContext(query, userId) {
+  try {
+    const context = {
+      isLedgerQuery: false,
+      matchedLedgers: [],
+      searchKeywords: []
+    };
+
+    // Get user's ledger data
+    const ledgerData = await LedgerData.find({ userId });
+    if (ledgerData.length === 0) {
+      return context;
+    }
+
+    // Extract potential ledger names from query
+    const queryWords = query.toLowerCase().split(/[\s\-_,\.]+/).filter(word => word.length > 2);
+    
+    const allLedgers = [];
+    ledgerData.forEach(data => {
+      data.ledgers.forEach(ledger => {
+        allLedgers.push({
+          ...ledger.toObject(),
+          fileName: data.fileName,
+          uploadDate: data.uploadDate
+        });
+      });
+    });
+
+    // Score and match ledgers
+    const matchedLedgers = [];
+    
+    allLedgers.forEach(ledger => {
+      let score = 0;
+      const matchedKeywords = [];
+      
+      queryWords.forEach(queryWord => {
+        // Exact name match (highest score)
+        if (ledger.name.toLowerCase().includes(queryWord)) {
+          score += 10;
+          matchedKeywords.push(queryWord);
+        }
+        
+        // Keyword match
+        ledger.keywords.forEach(ledgerKeyword => {
+          if (ledgerKeyword.includes(queryWord)) {
+            score += 5;
+            matchedKeywords.push(queryWord);
+          }
+          if (ledgerKeyword === queryWord) {
+            score += 8;
+          }
+        });
+      });
+      
+      if (score > 0) {
+        matchedLedgers.push({
+          ...ledger,
+          matchScore: score,
+          matchedKeywords: [...new Set(matchedKeywords)]
+        });
+      }
+    });
+
+    // Sort by match score
+    matchedLedgers.sort((a, b) => b.matchScore - a.matchScore);
+    
+    // If we have good matches, this is likely a ledger query
+    if (matchedLedgers.length > 0 && matchedLedgers[0].matchScore >= 8) {
+      context.isLedgerQuery = true;
+      context.matchedLedgers = matchedLedgers.slice(0, 5); // Top 5 matches
+      context.searchKeywords = [...new Set(matchedLedgers.flatMap(l => l.keywords))];
+      
+      console.log('[LEDGER_CONTEXT] Found', matchedLedgers.length, 'ledger matches, top score:', matchedLedgers[0].matchScore);
+    }
+
+    return context;
+    
+  } catch (error) {
+    console.error('[LEDGER_CONTEXT] Error:', error);
+    return {
+      isLedgerQuery: false,
+      matchedLedgers: [],
+      searchKeywords: []
+    };
+  }
+}
+
 module.exports = {
   preprocessQuery,
   extractDateContext,
+  extractLedgerContext,
   createEnhancedPrompt,
   monthMappings,
   voucherTypeMappings

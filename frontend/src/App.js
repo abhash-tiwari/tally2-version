@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import axios from 'axios';
 import ChatComponent from './ChatComponent';
 import LoginComponent from './components/LoginComponent';
+import LedgerUpload from './components/LedgerUpload';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
 
@@ -177,6 +178,12 @@ function AppContent() {
               }
             </p>
           </div>
+
+          {/* Ledger Upload Section */}
+          <LedgerUpload onUploadComplete={(result) => {
+            console.log('[FRONTEND] Ledger upload completed:', result);
+            setShowChat(true);
+          }} />
         </div>
       </header>
       

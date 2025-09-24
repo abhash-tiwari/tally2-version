@@ -1,0 +1,2 @@
+# This file ensures the uploads/ledgers directory is created
+# Directory for storing uploaded ledger files temporarily during processing
