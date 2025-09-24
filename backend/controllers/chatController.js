@@ -2143,19 +2143,26 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Using exact match for top ledger:', topLedger.name, 'Keywords:', searchKeywords);
       
       // Search for transactions involving the matched ledgers
+      console.log('[CHAT] Searching in', dateFilteredChunks.length, 'date-filtered chunks for:', searchKeywords);
+      let totalLinesProcessed = 0;
+      let matchingLines = 0;
+      
       for (const ch of dateFilteredChunks) {
         const text = ch.content || (ch._doc && ch._doc.content) || '';
         const lines = text.split(/\r?\n/);
+        totalLinesProcessed += lines.length;
         
         for (const line of lines) {
           if (!line.trim()) continue;
           
-          // Check if line contains any of the ledger keywords
+          // Check if line contains any of the ledger keywords (exact match)
           const hasLedgerKeyword = searchKeywords.some(keyword => 
             line.toLowerCase().includes(keyword.toLowerCase())
           );
           
           if (hasLedgerKeyword) {
+            matchingLines++;
+            console.log('[CHAT] Found matching line:', line.substring(0, 100) + '...');
             // Extract transaction details
             const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
             const dateMatch = dateRegex.exec(line);
@@ -2167,18 +2174,48 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
               
               // Apply date filtering if specified
               if (dateContext && dateContext.isDateSpecific) {
-                const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-                const wantedMonths = new Set(
-                  (dateContext.months || [])
-                    .map(m => String(m).toLowerCase().slice(0,3))
-                    .filter(m => monthAbbrevs.includes(m))
-                );
-                const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
-                
-                const monthOk = wantedMonths.size === 0 || wantedMonths.has(monthAbbr);
-                const yearOk = wantedYears.size === 0 || wantedYears.has(year);
-                
-                if (!monthOk || !yearOk) continue;
+                // Special handling for Financial Year queries
+                if (dateContext.specificDateRange && dateContext.specificDateRange.includes('FY')) {
+                  const fyMatch = dateContext.specificDateRange.match(/FY\s*(\d{4})-(\d{2})/);
+                  if (fyMatch) {
+                    const startYear = parseInt(fyMatch[1]);
+                    const endYearShort = fyMatch[2];
+                    const endYear = parseInt('20' + endYearShort);
+                    
+                    // Convert current transaction date to comparable format
+                    const currentYear = parseInt('20' + year);
+                    const monthIndex = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(monthAbbr);
+                    
+                    // FY 2023-24 means Apr 2023 to Mar 2024
+                    let isInFY = false;
+                    if (currentYear === startYear && monthIndex >= 3) { // Apr-Dec of start year
+                      isInFY = true;
+                    } else if (currentYear === endYear && monthIndex <= 2) { // Jan-Mar of end year
+                      isInFY = true;
+                    }
+                    
+                    if (!isInFY) {
+                      console.log(`[CHAT] Excluding transaction outside FY ${dateContext.specificDateRange}: ${currentDate} (Year: ${currentYear}, Month: ${monthAbbr})`);
+                      continue;
+                    } else {
+                      console.log(`[CHAT] Including FY transaction: ${currentDate} (Year: ${currentYear}, Month: ${monthAbbr})`);
+                    }
+                  }
+                } else {
+                  // Regular date filtering for non-FY queries
+                  const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+                  const wantedMonths = new Set(
+                    (dateContext.months || [])
+                      .map(m => String(m).toLowerCase().slice(0,3))
+                      .filter(m => monthAbbrevs.includes(m))
+                  );
+                  const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+                  
+                  const monthOk = wantedMonths.size === 0 || wantedMonths.has(monthAbbr);
+                  const yearOk = wantedYears.size === 0 || wantedYears.has(year);
+                  
+                  if (!monthOk || !yearOk) continue;
+                }
               }
               
               // Parse CSV fields to extract account and amount
@@ -2246,33 +2283,58 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         return dateA - dateB;
       });
       
+      // For sales queries, filter only "Sale" voucher types
+      const isSalesQuery = question.toLowerCase().includes('sale');
+      if (isSalesQuery) {
+        const salesEntries = uniqueLedgerEntries.filter(entry => entry.voucherType && entry.voucherType.toLowerCase() === 'sale');
+        console.log(`[CHAT] Sales query detected - filtered from ${uniqueLedgerEntries.length} to ${salesEntries.length} transactions`);
+        uniqueLedgerEntries.length = 0; // Clear original array
+        uniqueLedgerEntries.push(...salesEntries); // Replace with sales only
+      }
+      
       // Calculate totals
       const totalDebits = uniqueLedgerEntries.filter(e => e.transactionType === 'debit').reduce((s, e) => s + e.amount, 0);
       const totalCredits = uniqueLedgerEntries.filter(e => e.transactionType === 'credit').reduce((s, e) => s + e.amount, 0);
       const netAmount = totalCredits - totalDebits;
       
-      // Create detailed listing
-      const entriesListing = uniqueLedgerEntries.slice(0, 50)
+      const fyNote = dateContext.specificDateRange ? `\n- Date Filter Applied: ${dateContext.specificDateRange} (Apr ${dateContext.years[0]} to Mar ${dateContext.years[1]})` : '';
+      const salesNote = isSalesQuery ? `\n- Sales Filter Applied: Only "Sale" voucher types included` : '';
+      
+      // For large result sets, show first 20 transactions and provide summary
+      const displayLimit = 20;
+      const displayEntries = uniqueLedgerEntries.slice(0, displayLimit);
+      const remainingCount = uniqueLedgerEntries.length - displayLimit;
+      
+      const entriesListing = displayEntries
         .map(e => `- ${e.date} | ${e.account} | ${e.transactionType.toUpperCase()}: ₹${e.amount.toLocaleString()} | ${e.voucherType}`)
         .join('\n');
       
       ledgerSummary = `\n\nPRECOMPUTED LEDGER SEARCH RESULTS:\n` +
         `- Primary Ledger: ${topLedger.name} (Score: ${topLedger.matchScore})\n` +
-        `- Exact Match Search: "${topLedger.name}"\n` +
+        `- Exact Match Search: "${topLedger.name}"${fyNote}${salesNote}\n` +
         `- Total Transactions Found: ${uniqueLedgerEntries.length}\n` +
         `- Total Debits: ₹${totalDebits.toLocaleString()}\n` +
         `- Total Credits: ₹${totalCredits.toLocaleString()}\n` +
         `- Net Amount: ₹${netAmount.toLocaleString()}\n\n` +
-        `DETAILED TRANSACTION LISTING:\n${entriesListing}\n` +
-        (uniqueLedgerEntries.length > 50 ? `\n...and ${uniqueLedgerEntries.length - 50} more transactions\n` : '') +
+        `DETAILED TRANSACTION LISTING (First ${Math.min(displayLimit, uniqueLedgerEntries.length)} transactions):\n${entriesListing}\n` +
+        (remainingCount > 0 ? `\n...and ${remainingCount} more transactions (Total: ${uniqueLedgerEntries.length} transactions)\n` : '') +
         `\n**IMPORTANT**: These are actual transactions from your Tally data involving the specified ledger(s).\n`;
       
-      console.log('[CHAT] Precomputed ledger search:', {
-        matchedLedgers: ledgerContext.matchedLedgers.length,
-        transactions: uniqueLedgerEntries.length,
-        totalDebits,
-        totalCredits,
-        netAmount
+      console.log('[CHAT] Ledger search completed:', {
+        searchKeyword: searchKeywords[0],
+        chunksSearched: dateFilteredChunks.length,
+        totalLinesProcessed,
+        matchingLines,
+        rawEntries: ledgerEntries.length,
+        uniqueTransactions: uniqueLedgerEntries.length,
+        totalDebits: totalDebits.toLocaleString(),
+        totalCredits: totalCredits.toLocaleString(),
+        netAmount: netAmount.toLocaleString()
+      });
+      
+      console.log('[CHAT] Sample transactions found:');
+      uniqueLedgerEntries.slice(0, 10).forEach((entry, i) => {
+        console.log(`  ${i+1}. ${entry.date} | ${entry.account} | ${entry.transactionType.toUpperCase()}: ₹${entry.amount.toLocaleString()} | ${entry.voucherType}`);
       });
     }
 
@@ -2796,7 +2858,9 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     } else if (queryType === 'profit') {
       extraInstructions = '\nCRITICAL: Use the ACCOUNTING PROFIT CALCULATION provided in the context. This contains the correct profit calculation using proper accounting principles. Present the results from this calculation, NOT a simple credits minus debits approach.';
     } else if (queryType === 'ledger') {
-      extraInstructions = '\nCRITICAL: Use the PRECOMPUTED LEDGER SEARCH RESULTS provided. This contains all transactions for the specific ledger(s) requested. Present the detailed transaction listing and totals from this summary. Show both debits and credits with dates and amounts.';
+      const isSalesQuery = question.toLowerCase().includes('sale');
+      const salesNote = isSalesQuery ? ' The results have been pre-filtered to show ONLY sales transactions (voucher type: Sale).' : '';
+      extraInstructions = `\nCRITICAL: Use ONLY the PRECOMPUTED LEDGER SEARCH RESULTS provided in the context. IGNORE ALL RAW TRANSACTION DATA. The precomputed results have already applied all necessary filtering (including date filtering for FY queries and sales filtering if requested).${salesNote} DO NOT search through or reference any raw CSV data. Present ONLY the transactions listed in the "DETAILED TRANSACTION LISTING" section of the precomputed results. For queries with many transactions (>20), provide a summary with key statistics and show the first 15-20 transactions, then mention "...and X more transactions" with the total count and amount. The precomputed results are the FINAL and COMPLETE answer.`;
     }
 
     // Add bank-specific instructions if bank is detected
@@ -2813,10 +2877,14 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     }
 
     // Build enhanced prompt with precomputed data
+    // For ledger queries, minimize raw data context to force AI to use precomputed results
+    const contextToUse = queryType === 'ledger' ? '' : finalContext;
+    const validationToUse = queryType === 'ledger' ? '' : finalValidationContext;
+    
     const enhancedPrompt = createEnhancedPrompt(
       question,
-      finalContext,
-      finalValidationContext,
+      contextToUse,
+      validationToUse,
       salesSummary,
       customDutySummary || majorExpenseSummary,
       journalSummary,
@@ -2891,7 +2959,11 @@ For date-specific queries like "sales vouchers in July 2025", ONLY count voucher
 
     // Call OpenAI API using axios with enhanced system prompt and real history
     // Use higher token limit for date-specific queries to ensure complete responses
-    const maxTokens = (dateContext && dateContext.isDateSpecific) ? 3000 : 1500;
+    // Extra high limit for ledger queries with many transactions
+    let maxTokens = 1500;
+    if (dateContext && dateContext.isDateSpecific) {
+      maxTokens = queryType === 'ledger' ? 4000 : 3000;
+    }
     console.log('[CHAT] Using max_tokens:', maxTokens, 'for date-specific query:', dateContext?.isDateSpecific);
     
     const openaiRes = await axios.post(
