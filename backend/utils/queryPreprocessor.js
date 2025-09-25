@@ -713,21 +713,32 @@ async function extractLedgerContext(query, userId) {
       let score = 0;
       const matchedKeywords = [];
       
+      // Check for exact ledger name match first (highest priority)
+      const ledgerNameLower = ledger.name.toLowerCase();
+      const queryLower = query.toLowerCase();
+      
+      // Exact full name match gets massive bonus
+      if (queryLower.includes(ledgerNameLower) || ledgerNameLower.includes(queryLower.replace(/[^a-z\s]/g, '').trim())) {
+        score += 100;
+        matchedKeywords.push('exact_name_match');
+        console.log(`[LEDGER_MATCH] Exact name match found: "${ledger.name}" in query: "${query}"`);
+      }
+      
       queryWords.forEach(queryWord => {
-        // Exact name match (highest score)
-        if (ledger.name.toLowerCase().includes(queryWord)) {
-          score += 10;
+        // Partial name match (high score)
+        if (ledgerNameLower.includes(queryWord)) {
+          score += 15;
           matchedKeywords.push(queryWord);
         }
         
-        // Keyword match
+        // Keyword match (lower score)
         ledger.keywords.forEach(ledgerKeyword => {
           if (ledgerKeyword.includes(queryWord)) {
-            score += 5;
+            score += 3;
             matchedKeywords.push(queryWord);
           }
           if (ledgerKeyword === queryWord) {
-            score += 8;
+            score += 5;
           }
         });
       });
@@ -751,6 +762,7 @@ async function extractLedgerContext(query, userId) {
       context.searchKeywords = [...new Set(matchedLedgers.flatMap(l => l.keywords))];
       
       console.log('[LEDGER_CONTEXT] Found', matchedLedgers.length, 'ledger matches, top score:', matchedLedgers[0].matchScore);
+      console.log('[LEDGER_CONTEXT] Top match:', matchedLedgers[0].name, 'Score:', matchedLedgers[0].matchScore);
     }
 
     return context;

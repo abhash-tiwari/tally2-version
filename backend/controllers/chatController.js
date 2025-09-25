@@ -2285,11 +2285,18 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       
       // For sales queries, filter only "Sale" voucher types
       const isSalesQuery = question.toLowerCase().includes('sale');
+      const isPurchaseQuery = question.toLowerCase().includes('purchase') || question.toLowerCase().includes('purc');
+      
       if (isSalesQuery) {
         const salesEntries = uniqueLedgerEntries.filter(entry => entry.voucherType && entry.voucherType.toLowerCase() === 'sale');
         console.log(`[CHAT] Sales query detected - filtered from ${uniqueLedgerEntries.length} to ${salesEntries.length} transactions`);
         uniqueLedgerEntries.length = 0; // Clear original array
         uniqueLedgerEntries.push(...salesEntries); // Replace with sales only
+      } else if (isPurchaseQuery) {
+        const purchaseEntries = uniqueLedgerEntries.filter(entry => entry.voucherType && entry.voucherType.toLowerCase() === 'purc');
+        console.log(`[CHAT] Purchase query detected - filtered from ${uniqueLedgerEntries.length} to ${purchaseEntries.length} transactions`);
+        uniqueLedgerEntries.length = 0; // Clear original array
+        uniqueLedgerEntries.push(...purchaseEntries); // Replace with purchases only
       }
       
       // Calculate totals
@@ -2299,6 +2306,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       
       const fyNote = dateContext.specificDateRange ? `\n- Date Filter Applied: ${dateContext.specificDateRange} (Apr ${dateContext.years[0]} to Mar ${dateContext.years[1]})` : '';
       const salesNote = isSalesQuery ? `\n- Sales Filter Applied: Only "Sale" voucher types included` : '';
+      const purchaseNote = isPurchaseQuery ? `\n- Purchase Filter Applied: Only "Purc" voucher types included` : '';
       
       // For large result sets, show first 20 transactions and provide summary
       const displayLimit = 20;
@@ -2311,7 +2319,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       
       ledgerSummary = `\n\nPRECOMPUTED LEDGER SEARCH RESULTS:\n` +
         `- Primary Ledger: ${topLedger.name} (Score: ${topLedger.matchScore})\n` +
-        `- Exact Match Search: "${topLedger.name}"${fyNote}${salesNote}\n` +
+        `- Exact Match Search: "${topLedger.name}"${fyNote}${salesNote}${purchaseNote}\n` +
         `- Total Transactions Found: ${uniqueLedgerEntries.length}\n` +
         `- Total Debits: ₹${totalDebits.toLocaleString()}\n` +
         `- Total Credits: ₹${totalCredits.toLocaleString()}\n` +
@@ -2859,8 +2867,10 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       extraInstructions = '\nCRITICAL: Use the ACCOUNTING PROFIT CALCULATION provided in the context. This contains the correct profit calculation using proper accounting principles. Present the results from this calculation, NOT a simple credits minus debits approach.';
     } else if (queryType === 'ledger') {
       const isSalesQuery = question.toLowerCase().includes('sale');
+      const isPurchaseQuery = question.toLowerCase().includes('purchase') || question.toLowerCase().includes('purc');
       const salesNote = isSalesQuery ? ' The results have been pre-filtered to show ONLY sales transactions (voucher type: Sale).' : '';
-      extraInstructions = `\nCRITICAL: Use ONLY the PRECOMPUTED LEDGER SEARCH RESULTS provided in the context. IGNORE ALL RAW TRANSACTION DATA. The precomputed results have already applied all necessary filtering (including date filtering for FY queries and sales filtering if requested).${salesNote} DO NOT search through or reference any raw CSV data. Present ONLY the transactions listed in the "DETAILED TRANSACTION LISTING" section of the precomputed results. For queries with many transactions (>20), provide a summary with key statistics and show the first 15-20 transactions, then mention "...and X more transactions" with the total count and amount. The precomputed results are the FINAL and COMPLETE answer.`;
+      const purchaseNote = isPurchaseQuery ? ' The results have been pre-filtered to show ONLY purchase transactions (voucher type: Purc).' : '';
+      extraInstructions = `\nCRITICAL: Use ONLY the PRECOMPUTED LEDGER SEARCH RESULTS provided in the context. IGNORE ALL RAW TRANSACTION DATA. The precomputed results have already applied all necessary filtering (including date filtering for FY queries and sales/purchase filtering if requested).${salesNote}${purchaseNote} DO NOT search through or reference any raw CSV data. Present ONLY the transactions listed in the "DETAILED TRANSACTION LISTING" section of the precomputed results. For queries with many transactions (>20), provide a summary with key statistics and show the first 15-20 transactions, then mention "...and X more transactions" with the total count and amount. The precomputed results are the FINAL and COMPLETE answer.`;
     }
 
     // Add bank-specific instructions if bank is detected
