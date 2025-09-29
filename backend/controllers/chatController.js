@@ -667,6 +667,88 @@ function extractSalesFromText(content, wantedMonthsSet, wantedYearsSet) {
   return results;
 }
 
+// Helper: extract journal entries (Type: Jrnl) from CSV-like content for a specific month/year
+function extractJournalsFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  // Handle both common layouts after Type field:
+  // A) 18-Oct-24,"Account","","Jrnl",-47,39,65,,  (Indian format with dashes)
+  // B) 18-Oct-24,"Account","","Jrnl",,-47,39,65,  (Indian format with dashes)
+  const lineRegexA = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Jrnl",(-?[0-9,.-]+)\b.*$/m;
+  const lineRegexB = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Jrnl",,(-?[0-9,.-]+)\b.*$/m;
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.includes('"Jrnl"')) continue;
+    const dm = dateRegex.exec(line);
+    if (!dm) continue;
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    let m = lineRegexA.exec(line);
+    if (!m) m = lineRegexB.exec(line);
+    if (m) {
+      const date = m[1];
+      const account = m[2] || '';
+      let amtRaw = m[3];
+      
+      // Handle Indian number formatting: -47,39,65 should become -473965
+      // Remove commas but keep negative sign
+      const isNegative = amtRaw.startsWith('-');
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      if (isNegative && !amtRaw.startsWith('-')) amtRaw = '-' + amtRaw;
+      
+      const amount = Number(amtRaw);
+      if (!Number.isNaN(amount) && amount !== 0) { // Include both positive and negative amounts
+        results.push({ date, account, amount });
+      }
+    }
+  }
+  return results;
+}
+
+// Helper: extract receipt entries (Type: Rcpt) from CSV-like content for a specific month/year
+function extractReceiptsFromText(content, wantedMonthsSet, wantedYearsSet) {
+  const results = [];
+  if (!content || typeof content !== 'string') return results;
+  // Handle both common layouts after Type field:
+  // A) 18-Oct-24,"Account","","Rcpt",-47,39,65,,  (Indian format with dashes)
+  // B) 18-Oct-24,"Account","","Rcpt",,-47,39,65,  (Indian format with dashes)
+  const lineRegexA = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Rcpt",(-?[0-9,.-]+)\b.*$/m;
+  const lineRegexB = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Rcpt",,(-?[0-9,.-]+)\b.*$/m;
+  const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.includes('"Rcpt"')) continue;
+    const dm = dateRegex.exec(line);
+    if (!dm) continue;
+    const mon = dm[2].toLowerCase();
+    const yy = dm[3];
+    const monthOk = wantedMonthsSet.size === 0 || wantedMonthsSet.has(mon);
+    const yearOk = wantedYearsSet.size === 0 || wantedYearsSet.has(yy);
+    if (!monthOk || !yearOk) continue;
+    let m = lineRegexA.exec(line);
+    if (!m) m = lineRegexB.exec(line);
+    if (m) {
+      const date = m[1];
+      const account = m[2] || '';
+      let amtRaw = m[3];
+      
+      // Handle Indian number formatting: -47,39,65 should become 473965
+      // Remove all commas and dashes (formatting characters)
+      amtRaw = amtRaw.replace(/[,-]/g, '');
+      
+      const amount = Number(amtRaw);
+      if (!Number.isNaN(amount) && amount > 0) { // Only positive amounts for receipts
+        results.push({ date, account, amount });
+      }
+    }
+  }
+  return results;
+}
+
 // Helper: extract credit note entries (Type: C/Note) from CSV-like content for a specific month/year
 function extractCreditNotesFromText(content, wantedMonthsSet, wantedYearsSet) {
   const results = [];
@@ -2987,7 +3069,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Precomputed sales (date-filtered scan with breakdown) generated.');
     }
 
-    // Deterministic precomputation: journals (Jrnl) for date-specific queries
+    // Enhanced journal processing with detailed computation
     let journalSummary = '';
     if (queryType === 'journal' && dateContext && dateContext.isDateSpecific) {
       const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
@@ -2998,20 +3080,193 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       );
       const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
 
-      const entries = [];
+      let entries = [];
       for (const ch of dateFilteredChunks) {
         const text = ch.content || (ch._doc && ch._doc.content) || '';
-        const found = extractEntriesOfTypeFromText(text, 'Jrnl', wantedMonths, wantedYears)
+        const found = extractJournalsFromText(text, wantedMonths, wantedYears)
           .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
-        if (found.length) entries.push(...found);
+        if (found.length) {
+          console.log('[CHAT] Found', found.length, 'journal entries in chunk from', ch.fileName);
+          console.log('[CHAT] Sample entries:', found.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
+          entries.push(...found);
+        }
       }
-      const totalDebit = entries.filter(e => e.amount < 0).reduce((s, e) => s + e.amount, 0);
-      const totalCredit = entries.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
-      const sample = entries.slice(0, 25)
-        .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
-        .join('\n');
-      journalSummary = `\n\nPRECOMPUTED JOURNAL (JRNL) SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total debits: ${totalDebit.toLocaleString()}\n- Total credits: ${totalCredit.toLocaleString()}\nSample entries:\n${sample}\n`;
-      console.log('[CHAT] Precomputed journals (date-filtered scan):', { count: entries.length, totalDebit, totalCredit });
+
+      // Remove duplicates and prepare for Python calculation
+      const uniqueJournalEntries = [];
+      const seenJournal = new Set();
+      for (const entry of entries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seenJournal.has(key)) {
+          seenJournal.add(key);
+          uniqueJournalEntries.push(entry);
+        }
+      }
+
+      console.log('[CHAT] Total entries before filtering:', entries.length);
+      const positiveAmounts = uniqueJournalEntries.filter(e => e.amount > 0).length;
+      const negativeAmounts = uniqueJournalEntries.filter(e => e.amount < 0).length;
+      const zeroAmounts = uniqueJournalEntries.filter(e => e.amount === 0).length;
+      console.log('[CHAT] Positive amounts:', positiveAmounts, 'Negative amounts:', negativeAmounts, 'Zero amounts:', zeroAmounts);
+      console.log('[CHAT] After deduplication:', uniqueJournalEntries.length, 'unique journal entries');
+
+      if (uniqueJournalEntries.length > 0) {
+        console.log('[CHAT] All journal entries found:');
+        uniqueJournalEntries.forEach((entry, index) => {
+          console.log(`[CHAT]   ${index + 1}. ${entry.date}: ${entry.account} = ${entry.amount}`);
+        });
+
+        try {
+          console.log('[CHAT] Using Python for accurate journal total calculation from', uniqueJournalEntries.length, 'entries...');
+          const { calculateSalesTotals } = require('../utils/pythonCalculator');
+          const pythonResult = await calculateSalesTotals(uniqueJournalEntries, null);
+          const totalAmount = pythonResult.total_amount;
+          const pythonCalculationNote = ' (Python-calculated)';
+          console.log('[CHAT] Python calculation successful:', { total: totalAmount });
+
+          // Build a clear summary based on the date context
+          const isMonthSpecific = dateContext.months && dateContext.months.length > 0;
+          const isYearSpecific = dateContext.years && dateContext.years.length > 0;
+          
+          if (isMonthSpecific && isYearSpecific) {
+            // Month-specific query like "journal entries in july 2025"
+            const monthName = dateContext.months[0];
+            const year = dateContext.years[0];
+            journalSummary = `\n\nPRECOMPUTED JOURNAL SUMMARY FOR ${monthName.toUpperCase()} ${year}:\n`;
+          } else {
+            journalSummary = '\n\nPRECOMPUTED JOURNAL SUMMARY (BREAKDOWN BY PERIOD):\n';
+          }
+
+          const totalDebits = uniqueJournalEntries.filter(e => e.amount < 0).reduce((s, e) => s + Math.abs(e.amount), 0);
+          const totalCredits = uniqueJournalEntries.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
+          const netAmount = totalCredits - totalDebits;
+
+          journalSummary += `\nJOURNAL TRANSACTIONS FOUND:\n`;
+          journalSummary += `- Total Transactions: ${uniqueJournalEntries.length}\n`;
+          journalSummary += `- Total Debits: ₹${totalDebits.toLocaleString('en-IN')}\n`;
+          journalSummary += `- Total Credits: ₹${totalCredits.toLocaleString('en-IN')}\n`;
+          journalSummary += `- Net Amount: ₹${netAmount.toLocaleString('en-IN')}${pythonCalculationNote}\n\n`;
+          journalSummary += `DETAILED TRANSACTION LIST:\n`;
+          uniqueJournalEntries.forEach((entry, index) => {
+            const type = entry.amount > 0 ? 'Credit' : 'Debit';
+            journalSummary += `${index + 1}. ${entry.date} | ${entry.account} | ${type}: ₹${Math.abs(entry.amount).toLocaleString('en-IN')}\n`;
+          });
+
+          journalSummary += '\n**IMPORTANT**: Use ONLY this precomputed data. The transactions listed above are the complete and accurate journal data for the requested period. Present these exact numbers and transaction details.\n';
+
+        } catch (error) {
+          console.error('[CHAT] Python calculation failed, using fallback:', error);
+          const totalDebits = uniqueJournalEntries.filter(e => e.amount < 0).reduce((s, e) => s + Math.abs(e.amount), 0);
+          const totalCredits = uniqueJournalEntries.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
+          const netAmount = totalCredits - totalDebits;
+          
+          journalSummary = `\n\nPRECOMPUTED JOURNAL SUMMARY (Fallback calculation):\n- Total journal entries: ${uniqueJournalEntries.length}\n- Total debits: ₹${totalDebits.toLocaleString('en-IN')}\n- Total credits: ₹${totalCredits.toLocaleString('en-IN')}\n- Net amount: ₹${netAmount.toLocaleString('en-IN')}\n\nDETAILED TRANSACTION LIST:\n`;
+          uniqueJournalEntries.forEach((entry, index) => {
+            const type = entry.amount > 0 ? 'Credit' : 'Debit';
+            journalSummary += `${index + 1}. ${entry.date} | ${entry.account} | ${type}: ₹${Math.abs(entry.amount).toLocaleString('en-IN')}\n`;
+          });
+        }
+
+        console.log('[CHAT] Precomputed journals (enhanced):', { count: uniqueJournalEntries.length });
+      } else {
+        journalSummary = `\n\nPRECOMPUTED JOURNAL SUMMARY:\n- No journal entries found for the specified period.\n`;
+        console.log('[CHAT] No journal entries found for the specified period');
+      }
+    }
+
+    // Enhanced receipt processing with detailed computation
+    let receiptSummary = '';
+    if (queryType === 'receipt' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      let entries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = extractReceiptsFromText(text, wantedMonths, wantedYears)
+          .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
+        if (found.length) {
+          console.log('[CHAT] Found', found.length, 'receipt entries in chunk from', ch.fileName);
+          console.log('[CHAT] Sample entries:', found.slice(0, 3).map(e => `${e.date}: ${e.account} = ${e.amount}`));
+          entries.push(...found);
+        }
+      }
+
+      // Remove duplicates and prepare for Python calculation
+      const uniqueReceiptEntries = [];
+      const seenReceipt = new Set();
+      for (const entry of entries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seenReceipt.has(key)) {
+          seenReceipt.add(key);
+          uniqueReceiptEntries.push(entry);
+        }
+      }
+
+      console.log('[CHAT] Total entries before filtering:', entries.length);
+      const positiveAmounts = uniqueReceiptEntries.filter(e => e.amount > 0).length;
+      const negativeAmounts = uniqueReceiptEntries.filter(e => e.amount < 0).length;
+      const zeroAmounts = uniqueReceiptEntries.filter(e => e.amount === 0).length;
+      console.log('[CHAT] Positive amounts:', positiveAmounts, 'Negative amounts:', negativeAmounts, 'Zero amounts:', zeroAmounts);
+      console.log('[CHAT] After deduplication:', uniqueReceiptEntries.length, 'unique receipt entries');
+
+      if (uniqueReceiptEntries.length > 0) {
+        console.log('[CHAT] All receipt entries found:');
+        uniqueReceiptEntries.forEach((entry, index) => {
+          console.log(`[CHAT]   ${index + 1}. ${entry.date}: ${entry.account} = ${entry.amount}`);
+        });
+
+        try {
+          console.log('[CHAT] Using Python for accurate receipt total calculation from', uniqueReceiptEntries.length, 'entries...');
+          const { calculateSalesTotals } = require('../utils/pythonCalculator');
+          const pythonResult = await calculateSalesTotals(uniqueReceiptEntries, null);
+          const totalAmount = pythonResult.total_amount;
+          const pythonCalculationNote = ' (Python-calculated)';
+          console.log('[CHAT] Python calculation successful:', { total: totalAmount });
+
+          // Build a clear summary based on the date context
+          const isMonthSpecific = dateContext.months && dateContext.months.length > 0;
+          const isYearSpecific = dateContext.years && dateContext.years.length > 0;
+          
+          if (isMonthSpecific && isYearSpecific) {
+            // Month-specific query like "receipts in july 2025"
+            const monthName = dateContext.months[0];
+            const year = dateContext.years[0];
+            receiptSummary = `\n\nPRECOMPUTED RECEIPT SUMMARY FOR ${monthName.toUpperCase()} ${year}:\n`;
+          } else {
+            receiptSummary = '\n\nPRECOMPUTED RECEIPT SUMMARY (BREAKDOWN BY PERIOD):\n';
+          }
+
+          receiptSummary += `\nRECEIPT TRANSACTIONS FOUND:\n`;
+          receiptSummary += `- Total Transactions: ${uniqueReceiptEntries.length}\n`;
+          receiptSummary += `- Total Receipt Amount: ₹${totalAmount.toLocaleString('en-IN')}${pythonCalculationNote}\n\n`;
+          receiptSummary += `DETAILED TRANSACTION LIST:\n`;
+          uniqueReceiptEntries.forEach((entry, index) => {
+            receiptSummary += `${index + 1}. ${entry.date} | ${entry.account} | ₹${entry.amount.toLocaleString('en-IN')}\n`;
+          });
+
+          receiptSummary += '\n**IMPORTANT**: Use ONLY this precomputed data. The transactions listed above are the complete and accurate receipt data for the requested period. Present these exact numbers and transaction details.\n';
+
+        } catch (error) {
+          console.error('[CHAT] Python calculation failed, using fallback:', error);
+          const totalAmount = uniqueReceiptEntries.reduce((sum, entry) => sum + entry.amount, 0);
+          
+          receiptSummary = `\n\nPRECOMPUTED RECEIPT SUMMARY (Fallback calculation):\n- Total receipt entries: ${uniqueReceiptEntries.length}\n- Total receipt amount: ₹${totalAmount.toLocaleString('en-IN')}\n\nDETAILED TRANSACTION LIST:\n`;
+          uniqueReceiptEntries.forEach((entry, index) => {
+            receiptSummary += `${index + 1}. ${entry.date} | ${entry.account} | ₹${entry.amount.toLocaleString('en-IN')}\n`;
+          });
+        }
+
+        console.log('[CHAT] Precomputed receipts (enhanced):', { count: uniqueReceiptEntries.length });
+      } else {
+        receiptSummary = `\n\nPRECOMPUTED RECEIPT SUMMARY:\n- No receipt entries found for the specified period.\n`;
+        console.log('[CHAT] No receipt entries found for the specified period');
+      }
     }
 
     // Estimate token usage to prevent overflow
@@ -3032,6 +3287,14 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       finalContext = ''; // Clear chunk context to force model focus on precomputed data
       finalValidationContext = '';
       console.log('[CHAT] Payment query with precomputed summary. Clearing chunk context to force model focus.');
+    } else if (queryType === 'journal' && journalSummary) {
+      finalContext = ''; // Clear chunk context to force model focus on precomputed data
+      finalValidationContext = '';
+      console.log('[CHAT] Journal query with precomputed summary. Clearing chunk context to force model focus.');
+    } else if (queryType === 'receipt' && receiptSummary) {
+      finalContext = ''; // Clear chunk context to force model focus on precomputed data
+      finalValidationContext = '';
+      console.log('[CHAT] Receipt query with precomputed summary. Clearing chunk context to force model focus.');
     }
     
     // Clear context for sales queries to force AI to use precomputed data only
@@ -3053,7 +3316,11 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     } else if (queryType === 'purchase') {
       extraInstructions = '\nIMPORTANT: Include ALL purchase-related entries (purchase, supplier, GRN, material, inventory, stock, goods received). Do not overlook any purchase transactions. Check for variations like "purc", "supplier", "material", "inventory", "stock", "goods received", "GRN".';
     } else if (queryType === 'journal') {
-      extraInstructions = '\nIMPORTANT: Include ONLY journal (Jrnl) vouchers. Report both debit (negative) and credit (positive) amounts. If a specific date is requested (e.g., 1-May-24), list all Jrnl entries on that date. Do not include purchases, sales, receipts.';
+      if (journalSummary) {
+        extraInstructions = '\nCRITICAL: Use the PRECOMPUTED JOURNAL SUMMARY provided. This contains all journal entries already calculated with precise totals. Present the breakdown and totals from this summary. Do not perform additional calculations.';
+      } else {
+        extraInstructions = '\nIMPORTANT: Include ONLY journal (Jrnl) vouchers. Report both debit (negative) and credit (positive) amounts. If a specific date is requested (e.g., 1-May-24), list all Jrnl entries on that date. Do not include purchases, sales, receipts.';
+      }
     } else if (queryType === 'expense') {
       if (customDutySummary) {
         extraInstructions = '\nCRITICAL: Use the PRECOMPUTED CUSTOM DUTY SUMMARY provided. This contains all Custom Duty expenses already calculated. Present the totals and breakdown from this summary. Do not perform additional calculations.';
@@ -3063,7 +3330,11 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         extraInstructions = '\nIMPORTANT: Only include entries with "Expense" or related terms in the account or narration. Ignore purchases, sales, and receipts.';
       }
     } else if (queryType === 'receipt') {
-      extraInstructions = '\nIMPORTANT: Only include entries with "Receipt" or "Rcpt" in the account or narration. Ignore unrelated transactions.';
+      if (receiptSummary) {
+        extraInstructions = '\nCRITICAL: Use the PRECOMPUTED RECEIPT SUMMARY provided. This contains all receipt entries already calculated with precise totals. Present the breakdown and totals from this summary. Do not perform additional calculations.';
+      } else {
+        extraInstructions = '\nIMPORTANT: Only include entries with "Receipt" or "Rcpt" in the account or narration. Ignore unrelated transactions.';
+      }
     } else if (queryType === 'payment') {
       if (majorPaymentSummary) {
         extraInstructions = '\nCRITICAL: Use the PRECOMPUTED MAJOR PAYMENT SUMMARY provided. This contains all major payments already calculated with precise totals. Present the breakdown and totals from this summary. Do not perform additional calculations.';
@@ -3106,6 +3377,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       customDutySummary || majorExpenseSummary || majorPaymentSummary,
       journalSummary,
       cashBalanceSummary + ledgerSummary,
+      receiptSummary,
       queryType,
       dateContext
     );

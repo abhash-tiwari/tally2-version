@@ -441,7 +441,7 @@ function capitalize3(s) {
  * @param {object} dateContext - Date context information
  * @returns {string} - Enhanced prompt for AI
  */
-function createEnhancedPrompt(originalQuery, context, validationContext, salesSummary, expenseSummary, journalSummary, cashBalanceSummary, queryType, dateContext) {
+function createEnhancedPrompt(originalQuery, context, validationContext, salesSummary, expenseSummary, journalSummary, cashBalanceSummary, receiptSummary, queryType, dateContext) {
   const isVoucherQuery = /voucher|transaction|entry|sale|purchase|receipt|payment|credit note|debit note/i.test(originalQuery);
   const isCountQuery = /how many|count of|number of|total (?:vouchers|transactions)/i.test(originalQuery);
   const isLoanQuery = /loan|borrowing|debt|credit facility|financial institution|bank/i.test(originalQuery);
@@ -615,6 +615,9 @@ STRICT DATE FILTERING INSTRUCTIONS:
   }
   if (cashBalanceSummary) {
     precomputedData += cashBalanceSummary;
+  }
+  if (receiptSummary) {
+    precomputedData += receiptSummary;
   }
 
   prompt += `
