@@ -12,6 +12,7 @@ const ChatComponent = ({ onClose }) => {
   const [answering, setAnswering] = useState(false);
   const [chatError, setChatError] = useState('');
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [isLedgerQuery, setIsLedgerQuery] = useState(false);
   const chatContainerRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -56,6 +57,7 @@ const ChatComponent = ({ onClose }) => {
         body: JSON.stringify({ 
           question: userMessage,
           selectedFiles: selectedFiles,
+          isLedgerQuery: isLedgerQuery,
           // Include the latest user message since setState is async
           chatHistory: [...chatHistory, { role: 'user', content: userMessage }]
         }),
@@ -174,6 +176,19 @@ const ChatComponent = ({ onClose }) => {
             selectedFiles={selectedFiles}
             onFileSelectionChange={setSelectedFiles}
           />
+          
+          {/* Query Type Selector */}
+          <div className="query-options">
+            <label className="ledger-checkbox">
+              <input 
+                type="checkbox" 
+                checked={isLedgerQuery}
+                onChange={(e) => setIsLedgerQuery(e.target.checked)}
+              />
+              <span className="checkmark"></span>
+              <span className="label-text">Ledger Query (search specific company/account)</span>
+            </label>
+          </div>
           
           <form onSubmit={handleChatSubmit} className="chat-form">
             <div className="input-wrapper">

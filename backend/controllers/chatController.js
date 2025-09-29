@@ -1158,25 +1158,28 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Ledger context detected:', ledgerContext);
     
     // Detect query type and bank name
-    // PRIORITY: Date-based queries override ledger queries for sales/purchase/quarter patterns
-    let queryType = detectQueryType(question);
+    // Check if user explicitly wants ledger query via frontend checkbox
+    const userWantsLedgerQuery = req.body.isLedgerQuery === true;
+    let queryType;
     
-    // Override ledger detection ONLY for period-based queries WITHOUT specific company names
-    const hasStrongLedgerMatch = ledgerContext.isLedgerQuery && ledgerContext.matchedLedgers[0]?.matchScore >= 100;
-    const isPeriodOnlyQuery = dateContext.isDateSpecific && 
-      (/\b(quarter|q[1-4])\b/i.test(question)) && // Quarter queries
-      !(/\b(made to|from|with|by)\b/i.test(question)); // No "made to" pattern
-    
-    const isGeneralSalesQuery = dateContext.isDateSpecific && 
-      (/\b(sales?)\b/i.test(question)) && 
-      !(/\b(made to|from|with|by)\b/i.test(question)) && // No specific company reference
-      !hasStrongLedgerMatch; // No strong ledger match
-    
-    if (isPeriodOnlyQuery || isGeneralSalesQuery) {
-      console.log('[CHAT] Period-based query detected - overriding ledger matching');
-      queryType = detectQueryType(question); // Use detected type, not ledger
-    } else if (ledgerContext.isLedgerQuery) {
+    if (userWantsLedgerQuery) {
+      console.log('[CHAT] User explicitly selected ledger query - forcing ledger type');
       queryType = 'ledger';
+    } else {
+      // Auto-detect mode - prioritize period queries over ledger for date-based sales/purchase
+      queryType = detectQueryType(question);
+      
+      const hasStrongLedgerMatch = ledgerContext.isLedgerQuery && ledgerContext.matchedLedgers[0]?.matchScore >= 100;
+      const isPeriodQuery = dateContext.isDateSpecific && 
+        (/\b(quarter|q[1-4]|sales?|purchase|purc)\b/i.test(question)) && 
+        !(/\b(made to|from|with|by)\b/i.test(question));
+      
+      if (isPeriodQuery && !hasStrongLedgerMatch) {
+        console.log('[CHAT] Period-based query detected - using period type');
+        // Keep the detected queryType (sales, purchase, etc.)
+      } else if (ledgerContext.isLedgerQuery) {
+        queryType = 'ledger';
+      }
     }
     
     const bankName = detectBankQuery(question);
