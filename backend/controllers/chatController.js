@@ -2276,13 +2276,6 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         }
       }
       
-      // Sort by date
-      uniqueLedgerEntries.sort((a, b) => {
-        const dateA = new Date(a.date.split('-').reverse().join('-'));
-        const dateB = new Date(b.date.split('-').reverse().join('-'));
-        return dateA - dateB;
-      });
-      
       // For sales queries, filter only "Sale" voucher types
       const isSalesQuery = question.toLowerCase().includes('sale');
       const isPurchaseQuery = question.toLowerCase().includes('purchase') || question.toLowerCase().includes('purc');
@@ -2299,6 +2292,44 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         uniqueLedgerEntries.push(...purchaseEntries); // Replace with purchases only
       }
       
+      // Sort by date AFTER filtering (handle DD-MMM-YY format like "1-Jul-24")
+      uniqueLedgerEntries.sort((a, b) => {
+        const parseDate = (dateStr) => {
+          if (!dateStr || dateStr === '') return new Date(0);
+          
+          const parts = dateStr.split('-');
+          if (parts.length !== 3) return new Date(0);
+          
+          const day = parseInt(parts[0]);
+          const monthStr = parts[1].toLowerCase();
+          const year = parseInt('20' + parts[2]); // Convert 24 to 2024
+          
+          const monthMap = {
+            'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5,
+            'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
+          };
+          
+          const month = monthMap[monthStr];
+          if (month === undefined) {
+            console.log(`[DATE_PARSE] Unknown month: "${monthStr}" in date: "${dateStr}"`);
+            return new Date(0);
+          }
+          
+          const parsedDate = new Date(year, month, day);
+          return parsedDate;
+        };
+        
+        const dateA = parseDate(a.date);
+        const dateB = parseDate(b.date);
+        return dateA - dateB;
+      });
+      
+      // Log final sorted order for debugging
+      console.log(`[DATE_SORT] Final chronological order (${uniqueLedgerEntries.length} transactions):`);
+      uniqueLedgerEntries.forEach((entry, index) => {
+        console.log(`  ${index + 1}. ${entry.date} | ${entry.account} | ₹${entry.amount.toLocaleString()} | ${entry.voucherType}`);
+      });
+      
       // Calculate totals
       const totalDebits = uniqueLedgerEntries.filter(e => e.transactionType === 'debit').reduce((s, e) => s + e.amount, 0);
       const totalCredits = uniqueLedgerEntries.filter(e => e.transactionType === 'credit').reduce((s, e) => s + e.amount, 0);
@@ -2308,12 +2339,8 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       const salesNote = isSalesQuery ? `\n- Sales Filter Applied: Only "Sale" voucher types included` : '';
       const purchaseNote = isPurchaseQuery ? `\n- Purchase Filter Applied: Only "Purc" voucher types included` : '';
       
-      // For large result sets, show first 20 transactions and provide summary
-      const displayLimit = 20;
-      const displayEntries = uniqueLedgerEntries.slice(0, displayLimit);
-      const remainingCount = uniqueLedgerEntries.length - displayLimit;
-      
-      const entriesListing = displayEntries
+      // Show ALL transactions in chronological order (no limit for ledger queries)
+      const entriesListing = uniqueLedgerEntries
         .map(e => `- ${e.date} | ${e.account} | ${e.transactionType.toUpperCase()}: ₹${e.amount.toLocaleString()} | ${e.voucherType}`)
         .join('\n');
       
@@ -2324,9 +2351,8 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         `- Total Debits: ₹${totalDebits.toLocaleString()}\n` +
         `- Total Credits: ₹${totalCredits.toLocaleString()}\n` +
         `- Net Amount: ₹${netAmount.toLocaleString()}\n\n` +
-        `DETAILED TRANSACTION LISTING (First ${Math.min(displayLimit, uniqueLedgerEntries.length)} transactions):\n${entriesListing}\n` +
-        (remainingCount > 0 ? `\n...and ${remainingCount} more transactions (Total: ${uniqueLedgerEntries.length} transactions)\n` : '') +
-        `\n**IMPORTANT**: These are actual transactions from your Tally data involving the specified ledger(s).\n`;
+        `COMPLETE CHRONOLOGICAL TRANSACTION LISTING (All ${uniqueLedgerEntries.length} transactions):\n${entriesListing}\n` +
+        `\n**IMPORTANT**: These transactions are sorted in PERFECT CHRONOLOGICAL ORDER and pre-filtered for the requested criteria. Use ONLY this data for your response.\n`;
       
       console.log('[CHAT] Ledger search completed:', {
         searchKeyword: searchKeywords[0],
@@ -2870,7 +2896,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       const isPurchaseQuery = question.toLowerCase().includes('purchase') || question.toLowerCase().includes('purc');
       const salesNote = isSalesQuery ? ' The results have been pre-filtered to show ONLY sales transactions (voucher type: Sale).' : '';
       const purchaseNote = isPurchaseQuery ? ' The results have been pre-filtered to show ONLY purchase transactions (voucher type: Purc).' : '';
-      extraInstructions = `\nCRITICAL: Use ONLY the PRECOMPUTED LEDGER SEARCH RESULTS provided in the context. IGNORE ALL RAW TRANSACTION DATA. The precomputed results have already applied all necessary filtering (including date filtering for FY queries and sales/purchase filtering if requested).${salesNote}${purchaseNote} DO NOT search through or reference any raw CSV data. Present ONLY the transactions listed in the "DETAILED TRANSACTION LISTING" section of the precomputed results. For queries with many transactions (>20), provide a summary with key statistics and show the first 15-20 transactions, then mention "...and X more transactions" with the total count and amount. The precomputed results are the FINAL and COMPLETE answer.`;
+      extraInstructions = `\nCRITICAL: Use ONLY the "COMPLETE CHRONOLOGICAL TRANSACTION LISTING" from the PRECOMPUTED LEDGER SEARCH RESULTS. IGNORE ALL RAW TRANSACTION DATA. The transactions in the precomputed results are already sorted in PERFECT CHRONOLOGICAL ORDER and pre-filtered for your query.${salesNote}${purchaseNote} DO NOT reorder, resort, or reorganize the transactions - they are already in the correct chronological sequence. Present ALL transactions exactly as listed in the "COMPLETE CHRONOLOGICAL TRANSACTION LISTING" section. DO NOT reference any raw CSV data or other transaction sources. The precomputed chronological list is the FINAL and COMPLETE answer.`;
     }
 
     // Add bank-specific instructions if bank is detected
