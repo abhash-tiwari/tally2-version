@@ -915,6 +915,11 @@ function detectQueryType(query) {
     }
   }
   
+  // Check payment queries before expense (to avoid overlap)
+  if (/\b(total\s+payments?|payments?\s+made|payments?\s+in|payments?\s+for)\b/i.test(lower)) {
+    return 'payment';
+  }
+  
   // Then check general query types
   for (const [type, keywords] of Object.entries(QUERY_TYPE_KEYWORDS)) {
     if (!priorityTypes.includes(type) && keywords.some(k => lower.includes(k))) {
@@ -941,6 +946,13 @@ function filterChunksByType(chunks, type) {
   // Let the AI analyze all data and identify major expenses directly
   if (type === 'expense') {
     console.log('[CHAT] Expense query detected - returning all chunks for AI analysis');
+    return chunks;
+  }
+  
+  // For payment queries, skip keyword filtering and return all chunks
+  // Let the AI analyze all data and identify major payments directly
+  if (type === 'payment') {
+    console.log('[CHAT] Payment query detected - returning all chunks for AI analysis');
     return chunks;
   }
   
@@ -1158,7 +1170,7 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Ledger context detected:', ledgerContext);
     
     // Detect query type and bank name
-    // Check if user explicitly wants ledger query via frontend checkbox
+    // Ledger queries are ONLY enabled when user explicitly checks the checkbox
     const userWantsLedgerQuery = req.body.isLedgerQuery === true;
     let queryType;
     
@@ -1166,20 +1178,9 @@ exports.chat = async (req, res) => {
       console.log('[CHAT] User explicitly selected ledger query - forcing ledger type');
       queryType = 'ledger';
     } else {
-      // Auto-detect mode - prioritize period queries over ledger for date-based sales/purchase
+      // Standard auto-detection - no ledger processing unless checkbox is checked
       queryType = detectQueryType(question);
-      
-      const hasStrongLedgerMatch = ledgerContext.isLedgerQuery && ledgerContext.matchedLedgers[0]?.matchScore >= 100;
-      const isPeriodQuery = dateContext.isDateSpecific && 
-        (/\b(quarter|q[1-4]|sales?|purchase|purc)\b/i.test(question)) && 
-        !(/\b(made to|from|with|by)\b/i.test(question));
-      
-      if (isPeriodQuery && !hasStrongLedgerMatch) {
-        console.log('[CHAT] Period-based query detected - using period type');
-        // Keep the detected queryType (sales, purchase, etc.)
-      } else if (ledgerContext.isLedgerQuery) {
-        queryType = 'ledger';
-      }
+      console.log('[CHAT] Auto-detect mode - ledger processing disabled (checkbox unchecked)');
     }
     
     const bankName = detectBankQuery(question);
@@ -2159,8 +2160,19 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       console.log('[CHAT] Processing individual ledger query for:', ledgerContext.matchedLedgers.map(l => l.name));
       
       const ledgerEntries = [];
-      // Use only the top matched ledger's keywords for more precise search
-      const topLedger = ledgerContext.matchedLedgers[0];
+      
+      // Special handling for profit queries - prioritize "Profit & Loss A/c"
+      let topLedger = ledgerContext.matchedLedgers[0];
+      if (/\b(profit|loss|p&l|pnl)\b/i.test(question)) {
+        const profitLossLedger = ledgerContext.matchedLedgers.find(ledger => 
+          /profit\s*&\s*loss\s*a\/c/i.test(ledger.name)
+        );
+        if (profitLossLedger) {
+          topLedger = profitLossLedger;
+          console.log('[CHAT] Profit query detected - prioritizing Profit & Loss A/c over other matches');
+        }
+      }
+      
       // For exact matching, prioritize the full ledger name first
       const searchKeywords = [topLedger.name.toLowerCase()];
       console.log('[CHAT] Using exact match for top ledger:', topLedger.name, 'Keywords:', searchKeywords);
@@ -2606,7 +2618,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
           console.log('[CHAT] No Custom Duty expenses found for the specified period');
         }
       } else {
-        // Handle Major Expenses queries using dynamic keyword matching
+        // Handle Major Expenses/Payments queries using dynamic keyword matching
         const majorExpenseEntries = [];
         for (const ch of dateFilteredChunks) {
           const text = ch.content || (ch._doc && ch._doc.content) || '';
@@ -2739,6 +2751,121 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
           majorExpenseSummary = `\n\nPRECOMPUTED MAJOR EXPENSE SUMMARY:\n- No major expenses found for the specified period using keyword matching.\n`;
           console.log('[CHAT] No major expenses found for the specified period');
         }
+      }
+    }
+
+    // Enhanced payment handling: Major Payments detection
+    let majorPaymentSummary = '';
+    
+    if (queryType === 'payment' && dateContext && dateContext.isDateSpecific) {
+      const monthAbbrevs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const wantedMonths = new Set(
+        (dateContext.months || [])
+          .map(m => String(m).toLowerCase().slice(0,3))
+          .filter(m => monthAbbrevs.includes(m))
+      );
+      const wantedYears = new Set((dateContext.years || []).map(y => String(y).slice(-2)));
+
+      // Handle Major Payments queries using dynamic keyword matching
+      const majorPaymentEntries = [];
+      for (const ch of dateFilteredChunks) {
+        const text = ch.content || (ch._doc && ch._doc.content) || '';
+        const found = await extractMajorExpensesFromText(text, wantedMonths, wantedYears, userId)
+          .then(results => results.map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' })));
+        if (found.length) {
+          console.log('[CHAT] Found', found.length, 'major payment entries in chunk from', ch.fileName);
+          majorPaymentEntries.push(...found);
+        }
+      }
+
+      // Remove duplicates and prepare for Python calculation
+      const uniqueMajorPayments = [];
+      const seenMajorPayment = new Set();
+      for (const entry of majorPaymentEntries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seenMajorPayment.has(key)) {
+          seenMajorPayment.add(key);
+          uniqueMajorPayments.push(entry);
+        }
+      }
+
+      if (uniqueMajorPayments.length > 0) {
+        console.log('[CHAT] Using Python for accurate major payment calculation from', uniqueMajorPayments.length, 'entries...');
+        
+        try {
+          // Use Python calculation for precise totals
+          const { calculateExpenseTotals } = require('../utils/pythonCalculator');
+          const pythonResult = await calculateExpenseTotals(uniqueMajorPayments, dateContext);
+          const totalMajorPayments = pythonResult.total_amount;
+
+          // Group by payment category for better analysis
+          const paymentsByCategory = pythonResult.categories || {};
+          const categoryBreakdown = Object.entries(paymentsByCategory)
+            .sort(([,a], [,b]) => b.total - a.total)
+            .slice(0, 10) // Top 10 categories
+            .map(([category, data]) => `- ${category}: ₹${data.total.toLocaleString('en-IN')} (${data.count} entries)`)
+            .join('\n');
+
+          // Create detailed entry list with dates
+          const detailedEntries = uniqueMajorPayments
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .map(entry => {
+              const formattedDate = new Date(entry.date).toLocaleDateString('en-GB', { 
+                day: '2-digit', 
+                month: 'short', 
+                year: '2-digit' 
+              });
+              return `${formattedDate}: ${entry.account} - ₹${entry.amount.toLocaleString('en-IN')}`;
+            })
+            .join('\n');
+
+          majorPaymentSummary = `\n\nPRECOMPUTED MAJOR PAYMENT SUMMARY (Python-calculated):\n- Total major payment entries found: ${uniqueMajorPayments.length}\n- Total major payments: ₹${totalMajorPayments.toLocaleString('en-IN')}\n\nTop payment categories:\n${categoryBreakdown}\n\nDETAILED PAYMENT ENTRIES (Date: Account - Amount):\n${detailedEntries}\n\n**IMPORTANT**: These are major business payments identified by keyword matching. Analysis focuses on significant payment outflows.\n`;
+          
+          console.log('[CHAT] Precomputed major payments (Python):', { entries: uniqueMajorPayments.length, total: totalMajorPayments });
+        } catch (error) {
+          console.error('[CHAT] Python calculation failed, using fallback:', error);
+          
+          // Enhanced fallback calculation with detailed breakdown
+          const totalMajorPayments = uniqueMajorPayments.reduce((sum, entry) => sum + entry.amount, 0);
+          
+          // Group by payment category for better analysis
+          const paymentsByCategory = uniqueMajorPayments.reduce((acc, entry) => {
+            const category = entry.account;
+            if (!acc[category]) {
+              acc[category] = { entries: [], total: 0 };
+            }
+            acc[category].entries.push(entry);
+            acc[category].total += entry.amount;
+            return acc;
+          }, {});
+
+          // Create detailed breakdown
+          const categoryBreakdown = Object.entries(paymentsByCategory)
+            .sort(([,a], [,b]) => b.total - a.total)
+            .slice(0, 10) // Top 10 categories
+            .map(([category, data]) => `- ${category}: ₹${data.total.toLocaleString('en-IN')} (${data.entries.length} entries)`)
+            .join('\n');
+
+          // Create detailed entry list with dates
+          const detailedEntries = uniqueMajorPayments
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .map(entry => {
+              const formattedDate = new Date(entry.date).toLocaleDateString('en-GB', { 
+                day: '2-digit', 
+                month: 'short', 
+                year: '2-digit' 
+              });
+              return `${formattedDate}: ${entry.account} - ₹${entry.amount.toLocaleString('en-IN')}`;
+            })
+            .join('\n');
+
+          majorPaymentSummary = `\n\nPRECOMPUTED MAJOR PAYMENT SUMMARY (Fallback calculation):\n- Total major payment entries found: ${uniqueMajorPayments.length}\n- Total major payments: ₹${totalMajorPayments.toLocaleString('en-IN')}\n\nTop payment categories:\n${categoryBreakdown}\n\nDETAILED PAYMENT ENTRIES (Date: Account - Amount):\n${detailedEntries}\n\n**IMPORTANT**: These are major business payments identified by keyword matching. Analysis focuses on significant payment outflows.\n`;
+          
+          console.log('[CHAT] Precomputed major payments (Fallback):', { entries: uniqueMajorPayments.length, total: totalMajorPayments });
+        }
+      } else {
+        majorPaymentSummary = `\n\nPRECOMPUTED MAJOR PAYMENT SUMMARY:\n- No major payments found for the specified period using keyword matching.\n`;
+        console.log('[CHAT] No major payments found for the specified period');
       }
     }
 
@@ -2901,6 +3028,10 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       finalContext = ''; // Clear chunk context to force model focus on precomputed data
       finalValidationContext = '';
       console.log('[CHAT] Expense query with precomputed summary. Clearing chunk context to force model focus.');
+    } else if (queryType === 'payment' && majorPaymentSummary) {
+      finalContext = ''; // Clear chunk context to force model focus on precomputed data
+      finalValidationContext = '';
+      console.log('[CHAT] Payment query with precomputed summary. Clearing chunk context to force model focus.');
     }
     
     // Clear context for sales queries to force AI to use precomputed data only
@@ -2934,7 +3065,11 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
     } else if (queryType === 'receipt') {
       extraInstructions = '\nIMPORTANT: Only include entries with "Receipt" or "Rcpt" in the account or narration. Ignore unrelated transactions.';
     } else if (queryType === 'payment') {
-      extraInstructions = '\nCRITICAL: Use the COMPLETE PAYMENT ENTRIES LIST provided in the context. This contains ALL payment entries found. Present the complete list organized by date, showing every single entry.';
+      if (majorPaymentSummary) {
+        extraInstructions = '\nCRITICAL: Use the PRECOMPUTED MAJOR PAYMENT SUMMARY provided. This contains all major payments already calculated with precise totals. Present the breakdown and totals from this summary. Do not perform additional calculations.';
+      } else {
+        extraInstructions = '\nCRITICAL: Use the COMPLETE PAYMENT ENTRIES LIST provided in the context. This contains ALL payment entries found. Present the complete list organized by date, showing every single entry.';
+      }
     } else if (queryType === 'profit') {
       extraInstructions = '\nCRITICAL: Use the ACCOUNTING PROFIT CALCULATION provided in the context. This contains the correct profit calculation using proper accounting principles. Present the results from this calculation, NOT a simple credits minus debits approach.';
     } else if (queryType === 'ledger') {
@@ -2968,7 +3103,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       contextToUse,
       validationToUse,
       salesSummary,
-      customDutySummary || majorExpenseSummary,
+      customDutySummary || majorExpenseSummary || majorPaymentSummary,
       journalSummary,
       cashBalanceSummary + ledgerSummary,
       queryType,

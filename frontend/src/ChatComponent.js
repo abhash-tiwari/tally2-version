@@ -186,7 +186,7 @@ const ChatComponent = ({ onClose }) => {
                 onChange={(e) => setIsLedgerQuery(e.target.checked)}
               />
               <span className="checkmark"></span>
-              <span className="label-text">Ledger Query (search specific company/account)</span>
+              <span className="label-text">🏢 Ledger Query (search specific company/account transactions)</span>
             </label>
           </div>
           
