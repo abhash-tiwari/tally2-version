@@ -1158,7 +1158,27 @@ exports.chat = async (req, res) => {
     console.log('[CHAT] Ledger context detected:', ledgerContext);
     
     // Detect query type and bank name
-    const queryType = ledgerContext.isLedgerQuery ? 'ledger' : detectQueryType(question);
+    // PRIORITY: Date-based queries override ledger queries for sales/purchase/quarter patterns
+    let queryType = detectQueryType(question);
+    
+    // Override ledger detection ONLY for period-based queries WITHOUT specific company names
+    const hasStrongLedgerMatch = ledgerContext.isLedgerQuery && ledgerContext.matchedLedgers[0]?.matchScore >= 100;
+    const isPeriodOnlyQuery = dateContext.isDateSpecific && 
+      (/\b(quarter|q[1-4])\b/i.test(question)) && // Quarter queries
+      !(/\b(made to|from|with|by)\b/i.test(question)); // No "made to" pattern
+    
+    const isGeneralSalesQuery = dateContext.isDateSpecific && 
+      (/\b(sales?)\b/i.test(question)) && 
+      !(/\b(made to|from|with|by)\b/i.test(question)) && // No specific company reference
+      !hasStrongLedgerMatch; // No strong ledger match
+    
+    if (isPeriodOnlyQuery || isGeneralSalesQuery) {
+      console.log('[CHAT] Period-based query detected - overriding ledger matching');
+      queryType = detectQueryType(question); // Use detected type, not ledger
+    } else if (ledgerContext.isLedgerQuery) {
+      queryType = 'ledger';
+    }
+    
     const bankName = detectBankQuery(question);
     console.log('[CHAT] Query type detected:', queryType, 'Bank detected:', bankName);
     
@@ -2784,7 +2804,19 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
           return acc;
       }, {});
 
-      salesSummary = '\n\nPRECOMPUTED SALES SUMMARY (BREAKDOWN BY PERIOD):\n';
+      // Build a clear summary based on the date context
+      const isMonthSpecific = dateContext.months && dateContext.months.length > 0;
+      const isYearSpecific = dateContext.years && dateContext.years.length > 0;
+      
+      if (isMonthSpecific && isYearSpecific) {
+        // Month-specific query like "april 2023 sales"
+        const monthName = dateContext.months[0];
+        const year = dateContext.years[0];
+        salesSummary = `\n\nPRECOMPUTED SALES SUMMARY FOR ${monthName.toUpperCase()} ${year}:\n`;
+      } else {
+        salesSummary = '\n\nPRECOMPUTED SALES SUMMARY (BREAKDOWN BY PERIOD):\n';
+      }
+      
       const { calculateSalesTotals } = require('../utils/pythonCalculator');
 
       // Calculate total for each year and build the summary string
@@ -2805,12 +2837,23 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
               pythonCalculationNote = ' (Fallback calculation)';
           }
 
-          salesSummary += `\n--- DATA FOR FINANCIAL YEAR ${year} ---\n`;
-          salesSummary += `- Entries found: ${yearEntries.length}\n`;
-          salesSummary += `- Total sales amount: ₹${yearTotal.toLocaleString('en-IN')}${pythonCalculationNote}\n`;
+          if (isMonthSpecific && isYearSpecific) {
+            // For month-specific queries, show detailed transaction list
+            salesSummary += `\nSALES TRANSACTIONS FOUND:\n`;
+            salesSummary += `- Total Transactions: ${yearEntries.length}\n`;
+            salesSummary += `- Total Sales Amount: ₹${yearTotal.toLocaleString('en-IN')}${pythonCalculationNote}\n\n`;
+            salesSummary += `DETAILED TRANSACTION LIST:\n`;
+            yearEntries.forEach((entry, index) => {
+              salesSummary += `${index + 1}. ${entry.date} | ${entry.account} | ₹${entry.amount.toLocaleString('en-IN')}\n`;
+            });
+          } else {
+            salesSummary += `\n--- DATA FOR FINANCIAL YEAR ${year} ---\n`;
+            salesSummary += `- Entries found: ${yearEntries.length}\n`;
+            salesSummary += `- Total sales amount: ₹${yearTotal.toLocaleString('en-IN')}${pythonCalculationNote}\n`;
+          }
       }
 
-      salesSummary += '\n**IMPORTANT**: Use ONLY this precomputed data. Each year section contains ALL sales data for that portion of the financial year period. The totals are already calculated for you. Simply present these numbers and sum them for the complete total. Do not recalculate.\n';
+      salesSummary += '\n**IMPORTANT**: Use ONLY this precomputed data. The transactions listed above are the complete and accurate sales data for the requested period. Present these exact numbers and transaction details.\n';
       console.log('[CHAT] Precomputed sales (date-filtered scan with breakdown) generated.');
     }
 

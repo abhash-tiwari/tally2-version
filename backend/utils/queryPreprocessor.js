@@ -179,6 +179,9 @@ function extractDateContext(query) {
     // Q1, Q2, Q3, Q4 format
     /\b(q[1-4])\s+(\d{4})\b/gi,
     /\b(\d{4})\s+(q[1-4])\b/gi,
+    // Allow words between quarter token and year (e.g., "q1 sales 2023", "2023 sales q1")
+    /\b(q[1-4])\b[^\d]{0,50}?\b(\d{4})\b/gi,
+    /\b(\d{4})\b[^q]{0,50}?\b(q[1-4])\b/gi,
     // First/Second/Third/Fourth quarter format (with typo support)
     /\b(first|second|third|fourth)\s+(quarter|quater)\s+(\d{4})\b/gi,
     /\b(\d{4})\s+(first|second|third|fourth)\s+(quarter|quater)\b/gi,
