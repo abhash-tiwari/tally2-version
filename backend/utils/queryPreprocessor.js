@@ -434,6 +434,7 @@ function capitalize3(s) {
  * @param {string} context - Data context from vector search
  * @param {string} validationContext - Validation context
  * @param {string} salesSummary - Precomputed sales summary
+ * @param {string} purchaseSummary - Precomputed purchase summary
  * @param {string} expenseSummary - Precomputed expense summary (major expenses or custom duty)
  * @param {string} journalSummary - Precomputed journal summary
  * @param {string} cashBalanceSummary - Precomputed cash balance summary
@@ -441,7 +442,7 @@ function capitalize3(s) {
  * @param {object} dateContext - Date context information
  * @returns {string} - Enhanced prompt for AI
  */
-function createEnhancedPrompt(originalQuery, context, validationContext, salesSummary, expenseSummary, journalSummary, cashBalanceSummary, receiptSummary, queryType, dateContext) {
+function createEnhancedPrompt(originalQuery, context, validationContext, salesSummary, purchaseSummary, expenseSummary, journalSummary, cashBalanceSummary, receiptSummary, queryType, dateContext) {
   const isVoucherQuery = /voucher|transaction|entry|sale|purchase|receipt|payment|credit note|debit note/i.test(originalQuery);
   const isCountQuery = /how many|count of|number of|total (?:vouchers|transactions)/i.test(originalQuery);
   const isLoanQuery = /loan|borrowing|debt|credit facility|financial institution|bank/i.test(originalQuery);
@@ -606,6 +607,9 @@ STRICT DATE FILTERING INSTRUCTIONS:
   let precomputedData = '';
   if (salesSummary) {
     precomputedData += salesSummary;
+  }
+  if (purchaseSummary) {
+    precomputedData += purchaseSummary;
   }
   if (expenseSummary) {
     precomputedData += expenseSummary;

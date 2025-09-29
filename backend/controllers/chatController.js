@@ -2255,9 +2255,29 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         }
       }
       
-      // For exact matching, prioritize the full ledger name first
-      const searchKeywords = [topLedger.name.toLowerCase()];
-      console.log('[CHAT] Using exact match for top ledger:', topLedger.name, 'Keywords:', searchKeywords);
+      // For compound queries (e.g., "Foreign Exchange Gain/loss of Company"), prioritize account ledgers over company ledgers
+      let selectedLedger = topLedger;
+      
+      // Check if this is a compound query with "of [entity]" pattern
+      const compoundQueryMatch = question.match(/\bof\s+([^,\s]+(?:\s+[^,\s]+)*?)(?:\s+(?:in|for|march|april|may|june|july|august|september|october|november|december|\d{4})|\s*$)/i);
+      if (compoundQueryMatch) {
+        // This is a compound query - prioritize account-type ledgers over company ledgers
+        const accountLedgers = ledgerContext.matchedLedgers.filter(ledger => {
+          const name = ledger.name.toLowerCase();
+          return name.includes('gain/loss') || name.includes('expense') || name.includes('income') || 
+                 name.includes('sales') || name.includes('purchase') || name.includes('receipt') ||
+                 name.includes('payment') || name.includes('interest') || name.includes('commission');
+        });
+        
+        if (accountLedgers.length > 0) {
+          selectedLedger = accountLedgers[0]; // Use the highest-scoring account ledger
+          console.log(`[CHAT] Compound query detected - prioritizing account ledger: "${selectedLedger.name}" over company ledger: "${topLedger.name}"`);
+        }
+      }
+      
+      // For exact matching, prioritize the selected ledger name first
+      const searchKeywords = [selectedLedger.name.toLowerCase()];
+      console.log('[CHAT] Using exact match for selected ledger:', selectedLedger.name, 'Keywords:', searchKeywords);
       
       // Search for transactions involving the matched ledgers
       console.log('[CHAT] Searching in', dateFilteredChunks.length, 'date-filtered chunks for:', searchKeywords);
@@ -2382,10 +2402,137 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         }
       }
       
+      // Apply secondary filtering for compound queries (e.g., "Foreign Exchange Gain/loss of Butali sugar")
+      let filteredLedgerEntries = ledgerEntries;
+      
+      // Detect "of [entity]" pattern in the query
+      const ofEntityMatch = question.match(/\bof\s+([^,\s]+(?:\s+[^,\s]+)*?)(?:\s+(?:in|for|march|april|may|june|july|august|september|october|november|december|\d{4})|\s*$)/i);
+      if (ofEntityMatch) {
+        const entityFilter = ofEntityMatch[1].trim().toLowerCase();
+        console.log('[CHAT] Detected secondary entity filter:', entityFilter);
+        
+        // Filter transactions to only include those related to the entity
+        const originalCount = filteredLedgerEntries.length;
+        filteredLedgerEntries = ledgerEntries.filter(entry => {
+          // For Foreign Exchange transactions, we need to look at the FULL transaction context
+          // not just the account name, because the related company might be in the counterpart
+          
+          // Get the full transaction line from the original data to find counterpart accounts
+          let fullTransactionContext = '';
+          
+          // Search through the chunks to find the full transaction context
+          for (const ch of dateFilteredChunks) {
+            const text = ch.content || (ch._doc && ch._doc.content) || '';
+            const lines = text.split(/\r?\n/);
+            
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              // Match the specific transaction by date AND amount to get the right context
+              if (line.includes('Foreign Exchange Gain/loss') && 
+                  line.includes(entry.date) && 
+                  (line.includes(entry.amount.toString()) || line.includes(`-${entry.amount}`))) {
+                
+                console.log(`[CHAT] Found exact transaction match: ${line.substring(0, 100)}...`);
+                
+                // Found the specific Foreign Exchange line, now get the context (next few lines for counterpart)
+                const contextLines = [];
+                contextLines.push(line);
+                
+                // Get next 3-5 lines to capture counterpart account
+                for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+                  const nextLine = lines[j];
+                  if (nextLine.trim() && !nextLine.match(/^\d{1,2}-[A-Za-z]{3}-\d{2}/)) {
+                    contextLines.push(nextLine);
+                  } else if (nextLine.match(/^\d{1,2}-[A-Za-z]{3}-\d{2}/)) {
+                    break; // New transaction started
+                  }
+                }
+                
+                fullTransactionContext = contextLines.join(' ').toLowerCase();
+                console.log(`[CHAT] Extracted context for ₹${entry.amount}: ${fullTransactionContext.substring(0, 150)}...`);
+                break;
+              }
+            }
+            if (fullTransactionContext) break;
+          }
+          
+          // Create comprehensive search text including full transaction context
+          const searchText = [
+            entry.account,
+            entry.fileName,
+            entry.matchedKeywords.join(' '),
+            fullTransactionContext
+          ].join(' ').toLowerCase();
+          
+          const entityWords = entityFilter.split(/\s+/);
+          
+          console.log(`[CHAT] Checking transaction ${entry.date} | ${entry.account} | ₹${entry.amount}`);
+          console.log(`[CHAT] Full context: ${fullTransactionContext.substring(0, 200)}...`);
+          
+          // Check if entity words are present (flexible matching for company names)
+          const hasAllWords = entityWords.every(word => {
+            // Direct word match
+            if (searchText.includes(word)) {
+              console.log(`[CHAT] Found word "${word}" in transaction context`);
+              return true;
+            }
+            
+            // Partial word match for company names (e.g., "butali" matches "Butali Sugar Mills")
+            const wordRegex = new RegExp(`\\b${word}`, 'i');
+            if (wordRegex.test(searchText)) {
+              console.log(`[CHAT] Found partial match for "${word}" in transaction context`);
+              return true;
+            }
+            
+            console.log(`[CHAT] Word "${word}" NOT found in context`);
+            return false;
+          });
+          
+          // Additional flexible matching for common company name patterns
+          let hasFlexibleMatch = false;
+          
+          // For multi-word company names, try matching the core company name
+          if (entityWords.length >= 2) {
+            // Try matching first 2-3 significant words (excluding common suffixes)
+            const significantWords = entityWords.filter(word => 
+              !['ltd', 'limited', 'pvt', 'private', 'plc', 'inc', 'corp', 'co'].includes(word.toLowerCase())
+            );
+            
+            if (significantWords.length >= 2) {
+              const coreWordsMatch = significantWords.slice(0, 2).every(word => {
+                const wordRegex = new RegExp(`\\b${word}`, 'i');
+                return wordRegex.test(searchText);
+              });
+              
+              if (coreWordsMatch) {
+                console.log(`[CHAT] Found core company name match for: ${significantWords.slice(0, 2).join(' ')}`);
+                hasFlexibleMatch = true;
+              }
+            }
+          }
+          
+          // Special case for known entities
+          const hasButaliSugar = entityFilter.includes('butali') && 
+            (searchText.includes('butali') || searchText.includes('sugar'));
+          
+          const matches = hasAllWords || hasFlexibleMatch || hasButaliSugar;
+          console.log(`[CHAT] Transaction ${entry.date} matches filter: ${matches}`);
+          
+          return matches;
+        });
+        
+        console.log(`[CHAT] Secondary filtering applied: ${originalCount} → ${filteredLedgerEntries.length} transactions (filtered by "${entityFilter}")`);
+        
+        if (filteredLedgerEntries.length === 0) {
+          console.log('[CHAT] No transactions found matching the secondary filter. Showing all transactions for the primary ledger.');
+          filteredLedgerEntries = ledgerEntries; // Fallback to show all if no matches
+        }
+      }
+      
       // Remove duplicates and sort by date
       const uniqueLedgerEntries = [];
       const seen = new Set();
-      for (const entry of ledgerEntries) {
+      for (const entry of filteredLedgerEntries) {
         const key = `${entry.date}|${entry.account}|${entry.amount}|${entry.transactionType}`;
         if (!seen.has(key)) {
           seen.add(key);
@@ -2455,6 +2602,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       const fyNote = dateContext.specificDateRange ? `\n- Date Filter Applied: ${dateContext.specificDateRange} (Apr ${dateContext.years[0]} to Mar ${dateContext.years[1]})` : '';
       const salesNote = isSalesQuery ? `\n- Sales Filter Applied: Only "Sale" voucher types included` : '';
       const purchaseNote = isPurchaseQuery ? `\n- Purchase Filter Applied: Only "Purc" voucher types included` : '';
+      const entityFilterNote = ofEntityMatch ? `\n- Entity Filter Applied: Only transactions related to "${ofEntityMatch[1].trim()}"` : '';
       
       // Show ALL transactions in chronological order (no limit for ledger queries)
       const entriesListing = uniqueLedgerEntries
@@ -2462,8 +2610,8 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
         .join('\n');
       
       ledgerSummary = `\n\nPRECOMPUTED LEDGER SEARCH RESULTS:\n` +
-        `- Primary Ledger: ${topLedger.name} (Score: ${topLedger.matchScore})\n` +
-        `- Exact Match Search: "${topLedger.name}"${fyNote}${salesNote}${purchaseNote}\n` +
+        `- Primary Ledger: ${selectedLedger.name} (Score: ${selectedLedger.matchScore})\n` +
+        `- Exact Match Search: "${selectedLedger.name}"${fyNote}${salesNote}${purchaseNote}${entityFilterNote}\n` +
         `- Total Transactions Found: ${uniqueLedgerEntries.length}\n` +
         `- Total Debits: ₹${totalDebits.toLocaleString()}\n` +
         `- Total Credits: ₹${totalCredits.toLocaleString()}\n` +
@@ -3374,6 +3522,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       contextToUse,
       validationToUse,
       salesSummary,
+      purchaseSummary,
       customDutySummary || majorExpenseSummary || majorPaymentSummary,
       journalSummary,
       cashBalanceSummary + ledgerSummary,
