@@ -413,8 +413,13 @@ function extractPurchasesFromText(content, wantedMonthsSet, wantedYearsSet) {
   const lineRegex = /^(\d{1,2}-[A-Za-z]{3}-\d{2}),"([^"]*)","","Purc",,(-?[0-9,.-]+)\b.*$/m;
   const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
   const lines = content.split(/\r?\n/);
+  
+  console.log(`[PURCHASE_EXTRACT] Processing ${lines.length} lines, looking for months:`, Array.from(wantedMonthsSet), 'years:', Array.from(wantedYearsSet));
+  
   for (const line of lines) {
     if (!line.includes('"Purc"')) continue;
+    
+    console.log(`[PURCHASE_EXTRACT] Found Purc line: ${line.substring(0, 150)}...`);
     const dm = dateRegex.exec(line);
     if (!dm) continue;
     const day = dm[1];
@@ -434,10 +439,17 @@ function extractPurchasesFromText(content, wantedMonthsSet, wantedYearsSet) {
       
       const amount = Number(amtRaw);
       if (!Number.isNaN(amount)) {
+        console.log(`[PURCHASE_EXTRACT] Extracted purchase: ${date} | ${account} | ₹${amount}`);
         results.push({ date, account, amount });
+      } else {
+        console.log(`[PURCHASE_EXTRACT] Skipped line - invalid amount: "${amtRaw}"`);
       }
+    } else {
+      console.log(`[PURCHASE_EXTRACT] Skipped line - regex no match`);
     }
   }
+  
+  console.log(`[PURCHASE_EXTRACT] Total purchases extracted: ${results.length}`);
   return results;
 }
 
@@ -449,8 +461,12 @@ function extractPaymentsFromText(content, wantedMonthsSet, wantedYearsSet) {
   const dateRegex = /\b(\d{1,2})-([A-Za-z]{3})-(\d{2})\b/;
   const lines = content.split(/\r?\n/);
   
+  console.log(`[PAYMENT_EXTRACT] Processing ${lines.length} lines, looking for months:`, Array.from(wantedMonthsSet), 'years:', Array.from(wantedYearsSet));
+  
   for (const line of lines) {
     if (!line.includes('"Pymt"')) continue;
+    
+    console.log(`[PAYMENT_EXTRACT] Found Pymt line: ${line.substring(0, 150)}...`);
     
     const dm = dateRegex.exec(line);
     if (!dm) continue;
@@ -513,9 +529,14 @@ function extractPaymentsFromText(content, wantedMonthsSet, wantedYearsSet) {
     }
     
     if (account && amount !== 0) {
+      console.log(`[PAYMENT_EXTRACT] Extracted payment: ${date} | ${account} | ₹${amount}`);
       results.push({ date, account, amount });
+    } else {
+      console.log(`[PAYMENT_EXTRACT] Skipped line - account: "${account}", amount: ${amount}`);
     }
   }
+  
+  console.log(`[PAYMENT_EXTRACT] Total payments extracted: ${results.length}`);
   return results;
 }
 
@@ -958,7 +979,7 @@ const QUERY_TYPE_KEYWORDS = {
   sales: ['sale', 'sales', 'revenue', 'income', 'sold'],
   purchase: ['purchase', 'purchases', 'purc', 'buy', 'bought', 'supplier', 'vendor', 'material', 'inventory', 'stock', 'goods received', 'grn'],
   journal: ['journal', 'jrnl', 'adjustment', 'transfer'],
-  expense: ['expense', 'expenses', 'cost', 'expenditure', 'pymt', 'payment', 'payments', 'outflow', 'outgoing', 'paid', 'supplier', 'vendor', 'loan', 'tds', 'tax', 'salary', 'rent', 'insurance', 'travel', 'freight', 'shipping', 'custom', 'duty'],
+  expense: ['expense', 'expenses', 'cost', 'expenditure', 'outflow', 'outgoing', 'supplier', 'vendor', 'loan', 'tds', 'tax', 'salary', 'rent', 'insurance', 'travel', 'freight', 'shipping', 'custom', 'duty'],
   receipt: ['receipt', 'rcpt', 'received', 'collection'],
   payment: ['payment', 'payments', 'pymt', 'paid', 'pay'],
   credit_note: ['credit note', 'credit notes', 'c/note', 'cnote', 'sales return', 'return'],
@@ -998,7 +1019,7 @@ function detectQueryType(query) {
   }
   
   // Check payment queries before expense (to avoid overlap)
-  if (/\b(total\s+payments?|payments?\s+made|payments?\s+in|payments?\s+for)\b/i.test(lower)) {
+  if (/\b(total\s+payments?|payments?\s+made|payments?\s+in|payments?\s+for|payment\s+entries|list.*payment|all\s+payment)\b/i.test(lower)) {
     return 'payment';
   }
   
@@ -1372,12 +1393,24 @@ exports.chat = async (req, res) => {
         }
       }
       
+      // Remove duplicates based on date|account|amount key
+      const uniquePayments = [];
+      const seen = new Set();
+      for (const entry of entries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniquePayments.push(entry);
+        }
+      }
+      console.log(`[CHAT] Payment deduplication: ${entries.length} total -> ${uniquePayments.length} unique`);
+      
       // Compute totals and create comprehensive summary with ALL entries
-      const total = entries.reduce((s, e) => s + (e.amount || 0), 0);
+      const total = uniquePayments.reduce((s, e) => s + Math.abs(e.amount || 0), 0);
       
       // Group entries by date for complete listing
       const entriesByDate = {};
-      entries.forEach(e => {
+      uniquePayments.forEach(e => {
         if (!entriesByDate[e.date]) entriesByDate[e.date] = [];
         entriesByDate[e.date].push(e);
       });
@@ -1394,16 +1427,16 @@ exports.chat = async (req, res) => {
         })
         .map(date => {
           const dayEntries = entriesByDate[date];
-          const entryList = dayEntries.map(e => `  • ${e.account}: ${e.amount.toLocaleString()}`).join('\n');
+          const entryList = dayEntries.map(e => `  • ${e.account}: ₹${Math.abs(e.amount).toLocaleString()}`).join('\n');
           return `${date}:\n${entryList}`;
         })
         .join('\n\n');
       
-      paymentSummary = `\n\n=== COMPLETE PAYMENT ENTRIES LIST ===\n` +
-        `TOTAL: ${entries.length} entries, Amount: ${total.toLocaleString()}\n\n` +
-        `${allEntriesText}\n\n` +
-        `=== END COMPLETE LIST ===\n`;
-      console.log('[CHAT] Precomputed payments (date-filtered scan):', { count: entries.length, total });
+      paymentSummary = `\n\nPRECOMPUTED PAYMENT SUMMARY (Deterministic):\n` +
+        `- Entries found: ${uniquePayments.length}\n` +
+        `- Total payments: ₹${total.toLocaleString()}\n\n` +
+        `COMPLETE PAYMENT ENTRIES LIST:\n${allEntriesText}\n`;
+      console.log('[CHAT] Precomputed payments (date-filtered scan):', { count: uniquePayments.length, total });
       
       // Debug: Check if May 14 entries are in the results
       const may14Entries = entries.filter(e => e.date.includes('14-May-25'));
@@ -2228,13 +2261,27 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
           .map(e => ({ ...e, fileName: ch.fileName || 'Unknown file' }));
         if (found.length) entries.push(...found);
       }
-      const total = entries.reduce((s, e) => s + (e.amount || 0), 0);
-      const sample = entries.slice(0, 25)
+      
+      // Remove duplicates based on date|account|amount key
+      const uniquePurchases = [];
+      const seen = new Set();
+      for (const entry of entries) {
+        const key = `${entry.date}|${entry.account}|${entry.amount}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniquePurchases.push(entry);
+        }
+      }
+      console.log(`[CHAT] Purchase deduplication: ${entries.length} total -> ${uniquePurchases.length} unique`);
+      
+      const total = uniquePurchases.reduce((s, e) => s + (e.amount || 0), 0);
+      const sample = uniquePurchases.slice(0, 25)
         .map(e => `- ${e.date} | ${e.account} | Amt: ${e.amount.toLocaleString()} | File: ${e.fileName}`)
         .join('\n');
-      purchaseSummary = `\n\nPRECOMPUTED PURCHASE SUMMARY (Deterministic):\n- Entries found: ${entries.length}\n- Total purchases: ${total.toLocaleString()}\nSample entries:\n${sample}\n`;
-      console.log('[CHAT] Precomputed purchases (date-filtered scan):', { count: entries.length, total });
+      purchaseSummary = `\n\nPRECOMPUTED PURCHASE SUMMARY (Deterministic):\n- Entries found: ${uniquePurchases.length}\n- Total purchases: ${total.toLocaleString()}\nSample entries:\n${sample}\n`;
+      console.log('[CHAT] Precomputed purchases (date-filtered scan):', { count: uniquePurchases.length, total });
     }
+
 
     // Individual ledger search handling
     let ledgerSummary = '';
@@ -3523,6 +3570,7 @@ BANK VALIDATION DETAILS (${bankName.toUpperCase()}):
       validationToUse,
       salesSummary,
       purchaseSummary,
+      paymentSummary,
       customDutySummary || majorExpenseSummary || majorPaymentSummary,
       journalSummary,
       cashBalanceSummary + ledgerSummary,
